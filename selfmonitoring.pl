@@ -16,6 +16,7 @@ use perluim::file;
 # Declare default script variables & declare log class.
 #
 my $time = time();
+my $version = "1.0";
 my ($Console,$SDK,$Execution_Date,$Final_directory);
 $Execution_Date = perluim::utils::getDate();
 $Console = new perluim::log('selfmonitoring.log',5,0,'yes');
@@ -26,7 +27,8 @@ $SIG{INT} = \&breakApplication;
 
 # Start logging
 $Console->print('---------------------------------------',5);
-$Console->print('callback_tester started at '.localtime(),5);
+$Console->print('Selfmonitoring started at '.localtime(),5);
+$Console->print("Version $version",5);
 $Console->print('---------------------------------------',5);
 
 #
@@ -42,7 +44,8 @@ my $Login               = $CFG->{"setup"}->{"nim_login"} || undef;
 my $Password            = $CFG->{"setup"}->{"nim_password"} || undef;
 my $GO_Intermediate     = $CFG->{"configuration"}->{"alarms"}->{"intermediate"} || 1;
 my $GO_Spooler          = $CFG->{"configuration"}->{"alarms"}->{"spooler"} || 1;
-my $Check_NisBridge     = $CFG->{"configuration"}->{"nisbridge"} || 0;
+my $Check_NisBridge     = $CFG->{"configuration"}->{"check_nisbridge"} || "no";
+my $Overwrite_HA        = $CFG->{"configuration"}->{"priority_on_ha"} || "no";
 
 # Declare alarms_manager
 my $alarm_manager = new perluim::alarmsmanager($CFG,"alarm_messages");
@@ -67,11 +70,13 @@ $Console->print('---------------------------------------',5);
 #
 my %ProbeCallback   = (); 
 foreach my $key (keys $CFG->{"probes_monitoring"}) {
-    my $callback    = $CFG->{"probes_monitoring"}->{"$key"}->{"callback"} || "get_info";
-    my $alarms      = $CFG->{"probes_monitoring"}->{"$key"}->{"alarms"} || 1;
+    my $callback        = $CFG->{"probes_monitoring"}->{"$key"}->{"callback"};
+    my $alarms          = $CFG->{"probes_monitoring"}->{"$key"}->{"alarm_on_probe_deactivated"} || 0;
+    my $ha_superiority  = $CFG->{"probes_monitoring"}->{"$key"}->{"ha_superiority"} || "yes";
     $ProbeCallback{"$key"} = { 
         callback => $callback,
-        alarms => $alarms
+        alarms => $alarms,
+        ha_superiority => $ha_superiority
     };
 }
 
@@ -173,6 +178,9 @@ sub checkRobots {
             spooler => 0
         );
 
+        $Console->print("Starting robots with Intermediate => $GO_Intermediate and Spooler => $GO_Spooler",5);
+        $Console->print('---------------------------------------',5);
+
         # Foreach robots
         foreach my $robot (@RobotsList) {
             next if "$robot->{status}" eq "2";
@@ -225,6 +233,8 @@ sub checkRobots {
 
         }
 
+        $Console->print('---------------------------------------',5);
+        $Console->print('Final statistiques :',5);
         foreach(keys %Stats) {
             $Console->print("$_ => $Stats{$_}");
         }
@@ -271,30 +281,67 @@ sub checkProbes {
         my $find_ha = 0;
         my $ha_port;
 
-        # While all probes retrieving 
+        #
+        # First while to find NAS and HA Probe
+        #
         foreach my $probe (@ProbesList) {
-
             if($probe->{name} eq "nas") {
                 $find_nas = 1;
             }
             elsif($probe->{name} eq "HA") {
                 $find_ha = 1;
-                $ha_port = $probe->{port};
+                $ha_port = $probe->{port}; # Get HA port because it's dynamic
             }
+        }
+
+        #
+        # If HA is here, find the status
+        #
+        my $ha_value;
+        if($find_ha) {
+            my $PDS = pdsCreate();
+            $Console->print("nimRequest : $hub->{robotname} - HA - get_status",4);
+            my ($RC,$RES) = nimRequest("$hub->{robotname}",$ha_port,"get_status",$PDS);
+            pdsDelete($PDS);
+
+            if($RC == NIME_OK) {
+                $ha_value = (Nimbus::PDS->new($RES))->get("connected");
+                $Console->print("Successfully retrived HA connected value => $ha_value");
+            }
+            else {
+                $Console->print("Failed to get HA status!",1);
+                $find_ha = 0;
+            }
+        }
+        undef $ha_port;
+
+
+        # While all probes retrieving 
+        foreach my $probe (@ProbesList) {
 
             # Verify if we have to check this probe or not!
             if(exists( $ProbeCallback{$probe->{name}} )) {
 
                 $Console->print('---------------------------------------',5);
-                $Console->print("Prepare to execute a callback for $probe->{name}, Active => $probe->{active}");
-                my $callback    = $ProbeCallback{$probe->{name}}{callback};
-                my $callAlarms  = $ProbeCallback{$probe->{name}}{alarms};
+                $Console->print("Prepare checkup for $probe->{name}, Active => $probe->{active}");
+                my $callback        = $ProbeCallback{$probe->{name}}{callback};
+                my $callAlarms      = $ProbeCallback{$probe->{name}}{alarms};
+                my $ha_superiority  = $ProbeCallback{$probe->{name}}{ha_superiority};
 
-                if(defined($callback) && $probe->{active} == 1) {
-                    doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback) if not $Audit;
+                # Verify if the probe is active or not!
+                if($probe->{active} == 1) {
+                    if(defined($callback)) {
+                        doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback) if not $Audit;
+                    }
+                    else {
+                        $Console->print("Callback is not defined!");
+                    }
                 }
                 else {
-                    if(not $Audit and $callAlarms) {
+
+                    # Verify we have the right to launch a alarm.
+                    # Note, if Overwrite_HA is set to yes and we are on a HA situation, the alarms key is overwrited.
+                    if(not $Audit and $callAlarms or ($find_ha and $Overwrite_HA eq "yes" and "$ha_value" eq "0" and $ha_superiority eq "yes" ) ) {
                         $Console->print("Probe is inactive, generate new alarm!",2);
                         my $probe_offline = $alarm_manager->get('probe_offline');
                         my ($RC_ALARM,$AlarmID) = $probe_offline->call({ 
@@ -313,15 +360,16 @@ sub checkProbes {
                     else {
                         $Console->print("Probe is inactive !");
                     }
+
                 }
 
             }
         }
 
-        if($find_nas && $Check_NisBridge) {
+        if($find_nas && $Check_NisBridge eq "yes") {
             $Console->print('---------------------------------------',5);
             $Console->print('Checkup NisBridge configuration');
-            checkNisBridge($hub->{robotname},$hub->{name},$ha_port,$find_ha);
+            checkNisBridge($hub->{robotname},$hub->{name},$find_ha,$ha_value);
             $Console->print('---------------------------------------',5);
         }
 
@@ -365,61 +413,47 @@ sub doCallback {
 
 #
 # retrieve nis_bridge key in NAS and return it.
-# checkNisBridge($robotname,$hubname,$ha_port,$ha)
+# checkNisBridge($robotname,$hubname,$ha,$ha_value)
 # used in checkProbes() method
 #
 sub checkNisBridge {
-    my ($robotname,$hubname,$ha_port,$ha) = @_; 
-
-    # TODO: Check HA probe!
-    my $ha_value;
-    if($ha) {
-        my $PDS = pdsCreate();
-        $Console->print("nimRequest : $robotname - HA/48037 - get_status",4);
-        my ($RC,$RES) = nimRequest("$robotname",$ha_port,"get_status",$PDS);
-        pdsDelete($PDS);
-
-        if($RC == NIME_OK) {
-            $ha_value = (Nimbus::PDS->new($RES))->get("connected");
-        }
-        else {
-            $Console->print("Failed to get HA status!",1);
-            return;
-        }
-    }
+    my ($robotname,$hubname,$ha,$ha_value) = @_; 
+    my $nis_value;
 
     # Generate alarm variable!
     my $generate_alarm = 1;
-
     {
-        my $PDS = pdsCreate();
         $Console->print("nimRequest : $robotname - 48000 - probe_config_get",4);
-        pdsPut_PCH($PDS,"name","nas");
-        pdsPut_PCH($PDS,"var","/setup/nis_brige");
-        my ($RC,$RES) = nimRequest("$robotname",48000,"probe_config_get",$PDS);
-        pdsDelete($PDS);
+        my $pds = new Nimbus::PDS();
+        $pds->put('name','nas',PDS_PCH);
+        $pds->put('var','/setup/nis_bridge',PDS_PCH);
+        my ($RC,$RES) = nimRequest("$robotname",48000,"probe_config_get",$pds->data());
 
-        my $nis_value;
         if($RC == NIME_OK) {
             $nis_value = (Nimbus::PDS->new($RES))->get("value");
             if($ha) {
-                $generate_alarm = 0 if (not $ha_value && $nis_value eq "yes" || $ha_value && $nis_value eq "no");
+                if ( (not $ha_value and $nis_value eq "yes") || ($ha_value and $nis_value eq "no") ) {
+                    $generate_alarm = 0;
+                }
             }
             else {
-                $generate_alarm = 0 if $nis_value eq "yes";
+                if($nis_value eq "yes") {
+                    $generate_alarm = 0;
+                }
             }
         }
         else {
             # TODO : Generate another alarm ?
-            $Console->print("Failed to get nis_bridge configuration!",1);
-
+            $Console->print("Failed to get nis_bridge configuration with RC $RC!",1);
             return;
         }
     }
 
     # Generate alarm
     if($generate_alarm) {
-        $Console->print("Generating new alarm (nis_bridge => $nis_value) - (ha => $ha_value)",2);
+        $Console->print("Generating new alarm for NIS_Bridge",2);
+        $Console->print("Nis_bridge => $nis_value",4);
+        $Console->print("HA connected => $ha_value",4);
         my $nis_alarm = $alarm_manager->get('nisbridge');
         my ($RC,$AlarmID) = $nis_alarm->call({ 
             robotname => "$robotname", 
@@ -434,6 +468,9 @@ sub checkNisBridge {
         else {
             $Console->print("Failed to create alarm!",1);
         }
+    }
+    else {
+        $Console->print("Nis_bridge ... OK!");
     }
 }
 
@@ -461,21 +498,10 @@ sub breakApplication {
 }
 
 # Call the main method 
-{ # Chunk optimization
-    my $retry = 3; 
-    while($retry--) {
-        my $rc = main();
-        last if $rc or $retry - 1 <= 0;
-        $| = 1; # Buffer I/O fix
-        sleep(5); # Pause the script for 10 seconds and retry !
-    }
-}
+main();
 
-
-#
-# Close the script / log class.
-# 
-$Console->finalTime($time);
+ $Console->finalTime($time);
 $| = 1; # Buffer I/O fix
 sleep(2);
 $Console->copyTo($Final_directory);
+$Console->close();
