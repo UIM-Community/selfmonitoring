@@ -13,8 +13,7 @@ CA UIM Self monitoring probe. This probe has been created to do self monitoring 
 
 # Roadmap and ideas 
 
-- Queues monitoring (State and size) -> Fallback dirscan
-- Self communication monitoring (ping on 48002 for exemple).  -> Fallback net_connect 
+- Ump monitoring
 
 # Installation and configuration guide 
 
