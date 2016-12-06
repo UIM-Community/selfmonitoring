@@ -66,6 +66,20 @@ Set `ha_superiority` to `no` if you dont want HA to rewrite the configuration.
         alarm_on_probe_deactivated = 1
         ha_superiority = yes
     </prop_processor>
+    <nas>
+        callback = get_info
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+        <check_keys>
+            <pub_subscribers>
+                <0>
+                    name = NiS-Bridge
+                    queue_len = <<100000
+                </0>
+            </pub_subcribers>
+        </check_keys>
+        check_alarm_name = checkconfig_nisbridge
+    </nas>
 </probes_monitoring>
 ```
 
