@@ -3,6 +3,7 @@ use strict;
 use warnings;
 use lib "D:/apps/Nimsoft/perllib";
 use lib "D:/apps/Nimsoft/Perl64/lib/Win32API";
+use Data::Dumper;
 use Nimbus::API;
 use Nimbus::CFG;
 use Nimbus::PDS;
@@ -46,6 +47,11 @@ my $GO_Intermediate     = $CFG->{"configuration"}->{"alarms"}->{"intermediate"} 
 my $GO_Spooler          = $CFG->{"configuration"}->{"alarms"}->{"spooler"} || 1;
 my $Check_NisBridge     = $CFG->{"configuration"}->{"check_nisbridge"} || "no";
 my $Overwrite_HA        = $CFG->{"configuration"}->{"priority_on_ha"} || "no";
+my @UMPServers          = split(',',$CFG->{"ump_monitoring"}->{"servers"});
+my $ump_mon             = 0;
+if(scalar @UMPServers > 0) {
+    $ump_mon = 1;
+}
 
 # Declare alarms_manager
 my $alarm_manager = new perluim::alarmsmanager($CFG,"alarm_messages");
@@ -71,12 +77,19 @@ $Console->print('---------------------------------------',5);
 my %ProbeCallback   = (); 
 foreach my $key (keys $CFG->{"probes_monitoring"}) {
     my $callback        = $CFG->{"probes_monitoring"}->{"$key"}->{"callback"};
+    my $find            = $CFG->{"probes_monitoring"}->{"$key"}->{"check_keys"};
     my $alarms          = $CFG->{"probes_monitoring"}->{"$key"}->{"alarm_on_probe_deactivated"} || 0;
     my $ha_superiority  = $CFG->{"probes_monitoring"}->{"$key"}->{"ha_superiority"} || "yes";
+    my $check_alarmName;
+    if(defined($find)) {
+        $check_alarmName = $CFG->{"probes_monitoring"}->{"$key"}->{"check_alarm_name"};
+    }
     $ProbeCallback{"$key"} = { 
         callback => $callback,
         alarms => $alarms,
-        ha_superiority => $ha_superiority
+        ha_superiority => $ha_superiority,
+        find => $find,
+        check_alarmName => $check_alarmName
     };
 }
 
@@ -88,8 +101,8 @@ nimLogin($Login,$Password) if defined($Login) && defined($Password);
 #
 # Declare framework, create / clean output directory.
 # 
-$SDK = new perluim::main("$Domain");
-$Final_directory = "$Output_directory/$Execution_Date";
+$SDK                = new perluim::main("$Domain");
+$Final_directory    = "$Output_directory/$Execution_Date";
 $SDK->createDirectory("$Output_directory/$Execution_Date");
 $Console->cleanDirectory("$Output_directory",$Cache_delay);
 
@@ -149,6 +162,12 @@ sub main {
 
             # Final success condition (when all callback are failed).
             $Console->print("Failed to execute getLocalRobots()",1) if not $success;
+        }
+
+        if($ump_mon) {
+            $Console->print("Start monitoring of UMP Servers.."); 
+            $Console->print("Servers to check : @UMPServers");
+            checkUMP($hub);
         }
          
         return 1;
@@ -327,11 +346,13 @@ sub checkProbes {
                 my $callback        = $ProbeCallback{$probe->{name}}{callback};
                 my $callAlarms      = $ProbeCallback{$probe->{name}}{alarms};
                 my $ha_superiority  = $ProbeCallback{$probe->{name}}{ha_superiority};
+                my $find            = $ProbeCallback{$probe->{name}}{find};
+                my $check_alarmName = $ProbeCallback{$probe->{name}}{check_alarmName};
 
                 # Verify if the probe is active or not!
                 if($probe->{active} == 1) {
                     if(defined($callback)) {
-                        doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback) if not $Audit;
+                        doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback,$find,$check_alarmName) if not $Audit;
                     }
                     else {
                         $Console->print("Callback is not defined!");
@@ -378,14 +399,28 @@ sub checkProbes {
     return 0;
 }
 
+# 
+# String strBeginWith($str,$expected);
+# used in doCallback();
+#
+sub strBeginWith {
+    return substr($_[0], 0, length($_[1])) eq $_[1];
+}
+
 #
 # Method to do a callback on a specific probe.
-# doCallback($robotname,$probeName,$probePort,$callback)
+# doCallback($robotname,$probeName,$probePort,$callback,$find)
 # used in checkProbes() method.
 # 
 sub doCallback {
-    my ($robotname,$hubname,$probeName,$probePort,$callback) = @_;
+    my ($robotname,$hubname,$probeName,$probePort,$callback,$check_keys,$check_alarmName) = @_;
     my $PDS = pdsCreate();
+
+    # Special rule for NAS only!
+    if(uc $probeName eq "NAS") {
+        pdsPut_INT($PDS,"detail",1);
+    }
+
     $Console->print("nimRequest : $robotname - $probePort - $callback",4);
     my ($CALLBACK_RC,$RES) = nimRequest("$robotname",$probePort,"$callback",$PDS);
     pdsDelete($PDS);
@@ -407,6 +442,74 @@ sub doCallback {
         }
         else {
             $Console->print("Failed to create alarm!",1);
+        }
+    }
+    else {
+        if(defined($check_keys)) {
+            $Console->print("doCallback: Entering into check_keys");
+            my $key_ok = 0;
+            my $object_value;
+            my $expected_value;
+            foreach (keys $check_keys) {
+                my $type = ref($check_keys->{$_});
+
+                if($type eq "HASH") {
+                    my $PDS = Nimbus::PDS->new($RES);
+                    my $count = 0;
+                    WONE: for(; my $OInfo = $PDS->getTable("$_",PDS_PDS,$count); $count++) {
+
+                        foreach my $id (keys $check_keys->{$_}) {
+
+                            my $match_all_key = 1;
+                            WTWO: foreach my $sec_key (keys $check_keys->{$_}->{$id}) {
+                                $object_value    = $OInfo->get("$sec_key");
+                                $expected_value  = $check_keys->{$_}->{$id}->{$sec_key};
+                                next if not defined($object_value);
+
+                                my $condition = $strBegin ? $object_value <= substr($expected_value,2) : $object_value eq $expected_value;
+
+                                if(not $condition) {
+                                    $match_all_key = 0;
+                                    last WTWO;
+                                }
+
+                            }
+
+                            if($match_all_key) {
+                                $key_ok = 1;
+                                last WONE;
+                            }
+
+                        }
+                        
+                    }
+                }
+                else {
+                    my $value = (Nimbus::PDS->new($RES))->get("$_");
+                    if(defined($value) and $value == $check_keys->{$_}) {
+                        $key_ok = 1;
+                    }
+                }
+
+            }
+            $Console->print("doCallback: exit check_keys with RC => $key_ok",2);
+
+            if(not $key_ok and not $Audit && defined($check_alarmName)) {
+                # Generate alarm!
+                $Console->print("doCallback: Generate a new check_configuration alarm!");
+                my $customAlarm = $alarm_manager->get("$check_alarmName");
+                my ($RC,$AlarmID) = $customAlarm->call({ 
+                    robotname => "$robotname",
+                    hubname => "$hubname"
+                });
+
+                if($RC == NIME_OK) {
+                    $Console->print("Alarm generated : $AlarmID - [$customAlarm->{severity}] - $customAlarm->{subsystem}");
+                }
+                else {
+                    $Console->print("Failed to create alarm!",1);
+                }
+            }
         }
     }
 }
@@ -471,6 +574,30 @@ sub checkNisBridge {
     }
     else {
         $Console->print("Nis_bridge ... OK!");
+    }
+}
+
+# 
+# Check all Wasp probes from UMP Servers.
+# checkUMP($hub)
+# used in main() method
+#
+sub checkUMP {
+    my ($hub) = @_;
+    foreach(@UMPServers) {
+
+        my $pds = new Nimbus::PDS();
+        $pds->put('name','wasp',PDS_PCH);
+        my ($RC,$RES) = nimRequest("$_",48000,"probe_list",$pds->data());
+        if($RC == NIME_OK) {
+            my $hash = Nimbus::PDS->new($RES)->asHash();
+            my $wasp_port = $hash->{"wasp"}->{"port"};
+
+            # TODO: Check if active 
+        }
+        else {
+
+        }
     }
 }
 
