@@ -43,12 +43,15 @@ my $Output_directory    = $CFG->{"setup"}->{"output_directory"} || "output";
 my $retry_count         = $CFG->{"setup"}->{"callback_retry_count"} || 3;
 my $Login               = $CFG->{"setup"}->{"nim_login"} || undef;
 my $Password            = $CFG->{"setup"}->{"nim_password"} || undef;
-my $GO_Intermediate     = $CFG->{"configuration"}->{"alarms"}->{"intermediate"} || 1;
-my $GO_Spooler          = $CFG->{"configuration"}->{"alarms"}->{"spooler"} || 1;
+my $GO_Intermediate     = $CFG->{"configuration"}->{"alarms"}->{"intermediate"} || 0;
+my $GO_Spooler          = $CFG->{"configuration"}->{"alarms"}->{"spooler"} || 0;
 my $Check_NisBridge     = $CFG->{"configuration"}->{"check_nisbridge"} || "no";
 my $Overwrite_HA        = $CFG->{"configuration"}->{"priority_on_ha"} || "no";
 my @UMPServers          = split(',',$CFG->{"ump_monitoring"}->{"servers"});
 my $ump_mon             = 0;
+my $probes_mon          = 0;
+my $ump_alarm_callback  = $CFG->{"ump_monitoring"}->{"alarm_callback"} || "ump_failcallback";
+my $ump_alarm_probelist = $CFG->{"ump_monitoring"}->{"alarm_probelist"} || "ump_probelist_fail";
 if(scalar @UMPServers > 0) {
     $ump_mon = 1;
 }
@@ -75,22 +78,25 @@ $Console->print('---------------------------------------',5);
 # Retrieve all probes with the callback
 #
 my %ProbeCallback   = (); 
-foreach my $key (keys $CFG->{"probes_monitoring"}) {
-    my $callback        = $CFG->{"probes_monitoring"}->{"$key"}->{"callback"};
-    my $find            = $CFG->{"probes_monitoring"}->{"$key"}->{"check_keys"};
-    my $alarms          = $CFG->{"probes_monitoring"}->{"$key"}->{"alarm_on_probe_deactivated"} || 0;
-    my $ha_superiority  = $CFG->{"probes_monitoring"}->{"$key"}->{"ha_superiority"} || "yes";
-    my $check_alarmName;
-    if(defined($find)) {
-        $check_alarmName = $CFG->{"probes_monitoring"}->{"$key"}->{"check_alarm_name"};
+if(defined($CFG->{"probes_monitoring"}) and scalar keys $CFG->{"probes_monitoring"} > 0) {
+    $probes_mon = 1;
+    foreach my $key (keys $CFG->{"probes_monitoring"}) {
+        my $callback        = $CFG->{"probes_monitoring"}->{"$key"}->{"callback"};
+        my $find            = $CFG->{"probes_monitoring"}->{"$key"}->{"check_keys"};
+        my $alarms          = $CFG->{"probes_monitoring"}->{"$key"}->{"alarm_on_probe_deactivated"} || 0;
+        my $ha_superiority  = $CFG->{"probes_monitoring"}->{"$key"}->{"ha_superiority"} || "yes";
+        my $check_alarmName;
+        if(defined($find)) {
+            $check_alarmName = $CFG->{"probes_monitoring"}->{"$key"}->{"check_alarm_name"};
+        }
+        $ProbeCallback{"$key"} = { 
+            callback => $callback,
+            alarms => $alarms,
+            ha_superiority => $ha_superiority,
+            find => $find,
+            check_alarmName => $check_alarmName
+        };
     }
-    $ProbeCallback{"$key"} = { 
-        callback => $callback,
-        alarms => $alarms,
-        ha_superiority => $ha_superiority,
-        find => $find,
-        check_alarmName => $check_alarmName
-    };
 }
 
 #
@@ -121,7 +127,7 @@ sub main {
         #
         # local_probeList(); , retrive all probes from remote hub.
         #
-        { # Memory optimization 
+        if($probes_mon) { # Memory optimization 
             my $trycount = $retry_count; # Get configuration max_retry for probeList method.
             my $success = 0;
 
@@ -144,7 +150,7 @@ sub main {
         #
         # getLocalRobots() , retrieve all robots from remote hub.
         #
-        { # Memory optimization
+        if($GO_Intermediate or $GO_Spooler) { # Memory optimization
 
             my $trycount = $retry_count; # Get configuration max_retry for probeList method.
             my $success = 0;
@@ -257,12 +263,13 @@ sub checkRobots {
         foreach(keys %Stats) {
             $Console->print("$_ => $Stats{$_}");
         }
-        $Console->print('---------------------------------------',5);
 
         # Write file to the disk.
         $Console->print("Write output files to the disk..");
         new perluim::file()->save("output/$Execution_Date/intermediate_servers.txt",\@Arr_intermediateRobots);
         new perluim::file()->save("output/$Execution_Date/failedspooler_servers.txt",\@Arr_spooler);
+
+        $Console->print('---------------------------------------',5);
 
         return 1;
     }
@@ -466,6 +473,7 @@ sub doCallback {
                                 $expected_value  = $check_keys->{$_}->{$id}->{$sec_key};
                                 next if not defined($object_value);
 
+                                my $strBegin = strBeginWith($expected_value,"<<");
                                 my $condition = $strBegin ? $object_value <= substr($expected_value,2) : $object_value eq $expected_value;
 
                                 if(not $condition) {
@@ -585,19 +593,51 @@ sub checkNisBridge {
 sub checkUMP {
     my ($hub) = @_;
     foreach(@UMPServers) {
+        $Console->print("Processing check on ump $_"); 
 
+        my $ERR = 0;
         my $pds = new Nimbus::PDS();
         $pds->put('name','wasp',PDS_PCH);
         my ($RC,$RES) = nimRequest("$_",48000,"probe_list",$pds->data());
         if($RC == NIME_OK) {
+            $Console->print("Callback probe_list executed succesfully!");
             my $hash = Nimbus::PDS->new($RES)->asHash();
-            my $wasp_port = $hash->{"wasp"}->{"port"};
 
-            # TODO: Check if active 
+            my $pds_ump = new Nimbus::PDS();
+            ($RC,$RES) = nimRequest("$_",$hash->{"wasp"}->{"port"},"get_info",$pds_ump->data());
+            if($RC != NIME_OK) {
+                $Console->print("Failed to execute callback get_info on wasp probe on $_",1);
+                my $ump_failcallback = $alarm_manager->get("$ump_alarm_callback");
+                my ($RC_ALARM,$AlarmID) = $ump_failcallback->call({ 
+                    umpName => "$_"
+                });
+
+                if($RC_ALARM == NIME_OK) {
+                    $Console->print("Alarm generated : $AlarmID - [$ump_failcallback->{severity}] - $ump_failcallback->{subsystem}");
+                }
+                else {
+                    $Console->print("Failed to create alarm!",1);
+                }
+            }
+            else {
+                $Console->print("Callback get_info return ok...");
+            }
         }
         else {
+            $Console->print("Failed to execute callback probe_list on ump $_",1);
+            my $ump_probelist_fail = $alarm_manager->get("$ump_alarm_probelist");
+            my ($RC_ALARM,$AlarmID) = $ump_probelist_fail->call({ 
+                umpName => "$_"
+            });
 
+            if($RC_ALARM == NIME_OK) {
+                $Console->print("Alarm generated : $AlarmID - [$ump_probelist_fail->{severity}] - $ump_probelist_fail->{subsystem}");
+            }
+            else {
+                $Console->print("Failed to create alarm!",1);
+            }
         }
+
     }
 }
 
