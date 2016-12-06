@@ -8,12 +8,9 @@ CA UIM Self monitoring probe. This probe has been created to do self monitoring 
 - NisBridge Checkup (With HA Support) 
 - Probe on hub checkup with HA Support (Callback & Down state).
 - Hub robots intermediate and spooler checkup.
+- UMP Monitoring
 
 > Feel free to PR new monitoring 
-
-# Roadmap and ideas 
-
-- Ump monitoring
 
 # Installation and configuration guide 
 
