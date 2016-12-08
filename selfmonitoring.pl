@@ -47,6 +47,8 @@ my $GO_Intermediate     = $CFG->{"configuration"}->{"alarms"}->{"intermediate"} 
 my $GO_Spooler          = $CFG->{"configuration"}->{"alarms"}->{"spooler"} || 0;
 my $Check_NisBridge     = $CFG->{"configuration"}->{"check_nisbridge"} || "no";
 my $Overwrite_HA        = $CFG->{"configuration"}->{"priority_on_ha"} || "no";
+my $Checkuptime         = $CFG->{"configuration"}->{"check_hubuptime"} || "no";
+my $Uptime_value        = $CFG->{"configuration"}->{"uptime_seconds"} || 600;
 my @UMPServers          = split(',',$CFG->{"ump_monitoring"}->{"servers"});
 my $ump_mon             = 0;
 my $probes_mon          = 0;
@@ -123,6 +125,26 @@ sub main {
     if($RC == NIME_OK) {
         $Console->print("Start processing $hub->{name} !!!",5);
         $Console->print('---------------------------------------',5);
+
+        if($Checkuptime eq "yes") {
+            $Console->print("Check hub uptime !");
+            if($hub->{uptime} <= $Uptime_value) {
+                $Console->print("Uptime is under the threshold of $Uptime_value",2);
+                my $hub_restart = $alarm_manager->get('hub_restart');
+                my ($RC,$AlarmID) = $hub_restart->call({ 
+                    second => "$Uptime_value",
+                    hubName => "$hub->{name}"
+                });
+
+                if($RC == NIME_OK) {
+                    $Console->print("Alarm generated : $AlarmID - [$hub_restart->{severity}] - $hub_restart->{subsystem}");
+                }
+                else {
+                    $Console->print("Failed to create alarm!",1);
+                }
+            }
+            $Console->print('---------------------------------------',5);
+        }
 
         #
         # local_probeList(); , retrive all probes from remote hub.
