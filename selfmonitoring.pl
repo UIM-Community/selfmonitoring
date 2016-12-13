@@ -12,6 +12,9 @@ use perluim::main;
 use perluim::alarmsmanager;
 use perluim::utils;
 use perluim::file;
+use perluim::distsrvjob;
+use POSIX qw( strftime );
+use Time::Piece;
 
 #
 # Declare default script variables & declare log class.
@@ -49,13 +52,26 @@ my $Check_NisBridge     = $CFG->{"configuration"}->{"check_nisbridge"} || "no";
 my $Overwrite_HA        = $CFG->{"configuration"}->{"priority_on_ha"} || "no";
 my $Checkuptime         = $CFG->{"configuration"}->{"check_hubuptime"} || "no";
 my $Uptime_value        = $CFG->{"configuration"}->{"uptime_seconds"} || 600;
-my @UMPServers          = split(',',$CFG->{"ump_monitoring"}->{"servers"});
-my $ump_mon             = 0;
 my $probes_mon          = 0;
-my $ump_alarm_callback  = $CFG->{"ump_monitoring"}->{"alarm_callback"} || "ump_failcallback";
-my $ump_alarm_probelist = $CFG->{"ump_monitoring"}->{"alarm_probelist"} || "ump_probelist_fail";
-if(scalar @UMPServers > 0) {
-    $ump_mon = 1;
+my $ump_mon             = 0;
+my @UMPServers;
+my $ump_alarm_callback;
+my $ump_alarm_probelist;
+if(defined $CFG->{"ump_monitoring"}) {
+    @UMPServers          = split(',',$CFG->{"ump_monitoring"}->{"servers"});
+    $ump_alarm_callback  = $CFG->{"ump_monitoring"}->{"alarm_callback"} || "ump_failcallback";
+    $ump_alarm_probelist = $CFG->{"ump_monitoring"}->{"alarm_probelist"} || "ump_probelist_fail";
+    if(scalar @UMPServers > 0) {
+        $ump_mon = 1;
+    }
+}
+my $deployment_mon = "no";
+my $deployment_maxtime;
+my $deployment_maxjobs;
+if(exists($CFG->{"deployment_monitoring"})) {
+    $deployment_mon = "yes"; 
+    $deployment_maxtime = $CFG->{"deployment_monitoring"}->{"job_time_threshold"} || 600; 
+    $deployment_maxjobs = $CFG->{"deployment_monitoring"}->{"max_jobs"} || 2000;
 }
 
 # Declare alarms_manager
@@ -149,7 +165,7 @@ sub main {
         #
         # local_probeList(); , retrive all probes from remote hub.
         #
-        if($probes_mon) { # Memory optimization 
+        { # Memory optimization 
             my $trycount = $retry_count; # Get configuration max_retry for probeList method.
             my $success = 0;
 
@@ -192,6 +208,7 @@ sub main {
             $Console->print("Failed to execute getLocalRobots()",1) if not $success;
         }
 
+        # UMP Monitoring
         if($ump_mon) {
             $Console->print("Start monitoring of UMP Servers.."); 
             $Console->print("Servers to check : @UMPServers");
@@ -327,6 +344,8 @@ sub checkProbes {
         $Console->print("hub->ProbeList() has been executed successfully!");
         my $find_nas = 0;
         my $find_ha = 0;
+        my $find_distsrv = 0;
+        my $distsrv_port; 
         my $ha_port;
 
         #
@@ -340,6 +359,10 @@ sub checkProbes {
                 $find_ha = 1;
                 $ha_port = $probe->{port}; # Get HA port because it's dynamic
             }
+            elsif($probe->{name} eq "distsrv") {
+                $find_distsrv = 1; 
+                $distsrv_port = $probe->{port};
+            }   
         }
 
         #
@@ -364,55 +387,57 @@ sub checkProbes {
         undef $ha_port;
 
 
-        # While all probes retrieving 
-        foreach my $probe (@ProbesList) {
+        if($probes_mon) {
+            # While all probes retrieving 
+            foreach my $probe (@ProbesList) {
 
-            # Verify if we have to check this probe or not!
-            if(exists( $ProbeCallback{$probe->{name}} )) {
+                # Verify if we have to check this probe or not!
+                if(exists( $ProbeCallback{$probe->{name}} )) {
 
-                $Console->print('---------------------------------------',5);
-                $Console->print("Prepare checkup for $probe->{name}, Active => $probe->{active}");
-                my $callback        = $ProbeCallback{$probe->{name}}{callback};
-                my $callAlarms      = $ProbeCallback{$probe->{name}}{alarms};
-                my $ha_superiority  = $ProbeCallback{$probe->{name}}{ha_superiority};
-                my $find            = $ProbeCallback{$probe->{name}}{find};
-                my $check_alarmName = $ProbeCallback{$probe->{name}}{check_alarmName};
+                    $Console->print('---------------------------------------',5);
+                    $Console->print("Prepare checkup for $probe->{name}, Active => $probe->{active}");
+                    my $callback        = $ProbeCallback{$probe->{name}}{callback};
+                    my $callAlarms      = $ProbeCallback{$probe->{name}}{alarms};
+                    my $ha_superiority  = $ProbeCallback{$probe->{name}}{ha_superiority};
+                    my $find            = $ProbeCallback{$probe->{name}}{find};
+                    my $check_alarmName = $ProbeCallback{$probe->{name}}{check_alarmName};
 
-                # Verify if the probe is active or not!
-                if($probe->{active} == 1) {
-                    if(defined($callback)) {
-                        doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback,$find,$check_alarmName) if not $Audit;
-                    }
-                    else {
-                        $Console->print("Callback is not defined!");
-                    }
-                }
-                else {
-
-                    # Verify we have the right to launch a alarm.
-                    # Note, if Overwrite_HA is set to yes and we are on a HA situation, the alarms key is overwrited.
-                    if(not $Audit and $callAlarms or ($find_ha and $Overwrite_HA eq "yes" and "$ha_value" eq "0" and $ha_superiority eq "yes" ) ) {
-                        $Console->print("Probe is inactive, generate new alarm!",2);
-                        my $probe_offline = $alarm_manager->get('probe_offline');
-                        my ($RC_ALARM,$AlarmID) = $probe_offline->call({ 
-                            probe => "$probe->{name}", 
-                            hubname => "$hub->{name}"
-                        });
-
-                        if($RC_ALARM == NIME_OK) {
-                            $Console->print("Alarm generated : $AlarmID - [$probe_offline->{severity}] - $probe_offline->{subsystem}");
+                    # Verify if the probe is active or not!
+                    if($probe->{active} == 1) {
+                        if(defined($callback)) {
+                            doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback,$find,$check_alarmName) if not $Audit;
                         }
                         else {
-                            $Console->print("Failed to create alarm!",1);
+                            $Console->print("Callback is not defined!");
                         }
-                        
                     }
                     else {
-                        $Console->print("Probe is inactive !");
+
+                        # Verify we have the right to launch a alarm.
+                        # Note, if Overwrite_HA is set to yes and we are on a HA situation, the alarms key is overwrited.
+                        if(not $Audit and $callAlarms or ($find_ha and $Overwrite_HA eq "yes" and "$ha_value" eq "0" and $ha_superiority eq "yes" ) ) {
+                            $Console->print("Probe is inactive, generate new alarm!",2);
+                            my $probe_offline = $alarm_manager->get('probe_offline');
+                            my ($RC_ALARM,$AlarmID) = $probe_offline->call({ 
+                                probe => "$probe->{name}", 
+                                hubname => "$hub->{name}"
+                            });
+
+                            if($RC_ALARM == NIME_OK) {
+                                $Console->print("Alarm generated : $AlarmID - [$probe_offline->{severity}] - $probe_offline->{subsystem}");
+                            }
+                            else {
+                                $Console->print("Failed to create alarm!",1);
+                            }
+                            
+                        }
+                        else {
+                            $Console->print("Probe is inactive !");
+                        }
+
                     }
 
                 }
-
             }
         }
 
@@ -420,6 +445,12 @@ sub checkProbes {
             $Console->print('---------------------------------------',5);
             $Console->print('Checkup NisBridge configuration');
             checkNisBridge($hub->{robotname},$hub->{name},$find_ha,$ha_value);
+        }
+
+        if($find_distsrv) {
+            $Console->print('---------------------------------------',5);
+            $Console->print('Checkup Distsrv jobs!');
+            checkDistsrv($hub,$distsrv_port);
             $Console->print('---------------------------------------',5);
         }
 
@@ -608,6 +639,102 @@ sub checkNisBridge {
 }
 
 # 
+# Check all distsrv jobs !
+# checkDistsrv($hub)
+# used in main() method
+#
+sub checkDistsrv {
+    my ($hub,$distsrv_port) = @_; 
+
+    my $pds = pdsCreate(); 
+    my ($RC,$RES) = nimRequest($hub->{robotname},$distsrv_port,"job_list",$pds);
+    pdsDelete($pds); 
+
+    if($RC == NIME_OK) {
+
+        my $JOB_PDS = Nimbus::PDS->new($RES);
+        my $count;
+        for( $count = 0; my $JobNFO = $JOB_PDS->getTable("entry",PDS_PDS,$count); $count++) {
+            my $Job = new perluim::distsrvjob($JobNFO);
+            $Console->print("Processing Job number $count");
+            next if $Job->{status} eq "finished";
+
+            my $date1;
+            {
+                my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($Job->{time_started});
+                $year+= 1900;
+                $date1 = sprintf("%02d:%02d:%02d %02d:%02d:%02d",$year,($mon+1),$mday,$hour,$min,$sec);
+            }
+
+            my $date2;
+            {
+                my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+                $year+= 1900;
+                $date2 = sprintf("%02d:%02d:%02d %02d:%02d:%02d",$year,($mon+1),$mday,$hour,$min,$sec);
+            }
+            my $format = '%Y:%m:%d %H:%M:%S';
+            my $diff = Time::Piece->strptime($date2, $format) - Time::Piece->strptime($date1, $format);
+            if($diff > $deployment_maxtime and not $Audit) {
+                my $distsrv_deployment = $alarm_manager->get("distsrv_deployment");
+                my ($RC_ALARM,$AlarmID) = $distsrv_deployment->call({ 
+                    jobid => "$Job->{job_id}",
+                    pkgName => "$Job->{package_name}",
+                    started => "$Job->{time_started}",
+                    diff => "$diff",
+                    probe => "distsrv",
+                    hubname => "$hub->{name}",
+                    robotName => "$hub->{robotname}"
+                });
+
+                if($RC_ALARM == NIME_OK) {
+                    $Console->print("Alarm generated : $AlarmID - [$distsrv_deployment->{severity}] - $distsrv_deployment->{subsystem}");
+                }
+                else {
+                    $Console->print("Failed to create alarm!",1);
+                }
+            }
+        }
+
+        if($count >= $deployment_maxjobs and not $Audit) {
+            $Console->print("Max jobs count reached!");
+            my $distsrv_maxjobs = $alarm_manager->get("distsrv_maxjobs");
+            my ($RC_ALARM,$AlarmID) = $distsrv_maxjobs->call({ 
+                max => "$deployment_maxjobs",
+                count => "$count",
+                probe => "distsrv",
+                hubname => "$hub->{name}",
+                robotName => "$hub->{robotname}"
+            });
+
+            if($RC_ALARM == NIME_OK) {
+                $Console->print("Alarm generated : $AlarmID - [$distsrv_maxjobs->{severity}] - $distsrv_maxjobs->{subsystem}");
+            }
+            else {
+                $Console->print("Failed to create alarm!",1);
+            }
+        }
+
+    }
+    else {
+        if(not $Audit) {
+            my $callback_fail = $alarm_manager->get("callback_fail");
+            my ($RC_ALARM,$AlarmID) = $callback_fail->call({ 
+                callback => "job_list",
+                probe => "distsrv",
+                hubname => "$hub->{name}"
+            });
+
+            if($RC_ALARM == NIME_OK) {
+                $Console->print("Alarm generated : $AlarmID - [$callback_fail->{severity}] - $callback_fail->{subsystem}");
+            }
+            else {
+                $Console->print("Failed to create alarm!",1);
+            }
+        }
+    }
+}
+
+# 
 # Check all Wasp probes from UMP Servers.
 # checkUMP($hub)
 # used in main() method
@@ -627,7 +754,7 @@ sub checkUMP {
 
             my $pds_ump = new Nimbus::PDS();
             ($RC,$RES) = nimRequest("$_",$hash->{"wasp"}->{"port"},"get_info",$pds_ump->data());
-            if($RC != NIME_OK) {
+            if($RC != NIME_OK && not $Audit) {
                 $Console->print("Failed to execute callback get_info on wasp probe on $_",1);
                 my $ump_failcallback = $alarm_manager->get("$ump_alarm_callback");
                 my ($RC_ALARM,$AlarmID) = $ump_failcallback->call({ 
@@ -647,16 +774,18 @@ sub checkUMP {
         }
         else {
             $Console->print("Failed to execute callback probe_list on ump $_",1);
-            my $ump_probelist_fail = $alarm_manager->get("$ump_alarm_probelist");
-            my ($RC_ALARM,$AlarmID) = $ump_probelist_fail->call({ 
-                umpName => "$_"
-            });
+            if(not $Audit) {
+                my $ump_probelist_fail = $alarm_manager->get("$ump_alarm_probelist");
+                my ($RC_ALARM,$AlarmID) = $ump_probelist_fail->call({ 
+                    umpName => "$_"
+                });
 
-            if($RC_ALARM == NIME_OK) {
-                $Console->print("Alarm generated : $AlarmID - [$ump_probelist_fail->{severity}] - $ump_probelist_fail->{subsystem}");
-            }
-            else {
-                $Console->print("Failed to create alarm!",1);
+                if($RC_ALARM == NIME_OK) {
+                    $Console->print("Alarm generated : $AlarmID - [$ump_probelist_fail->{severity}] - $ump_probelist_fail->{subsystem}");
+                }
+                else {
+                    $Console->print("Failed to create alarm!",1);
+                }
             }
         }
 
