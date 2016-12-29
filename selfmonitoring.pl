@@ -12,7 +12,7 @@ use perluim::main;
 use perluim::alarmsmanager;
 use perluim::utils;
 use perluim::file;
-use perluim::distsrvjob;
+use perluim::dtsrvjob;
 use POSIX qw( strftime );
 use Time::Piece;
 
@@ -68,7 +68,7 @@ if(defined $CFG->{"ump_monitoring"}) {
 my $deployment_mon = "no";
 my $deployment_maxtime;
 my $deployment_maxjobs;
-if(exists($CFG->{"deployment_monitoring"})) {
+if(defined $CFG->{"deployment_monitoring"}) {
     $deployment_mon = "yes"; 
     $deployment_maxtime = $CFG->{"deployment_monitoring"}->{"job_time_threshold"} || 600; 
     $deployment_maxjobs = $CFG->{"deployment_monitoring"}->{"max_jobs"} || 2000;
@@ -127,7 +127,7 @@ nimLogin($Login,$Password) if defined($Login) && defined($Password);
 # 
 $SDK                = new perluim::main("$Domain");
 $Final_directory    = "$Output_directory/$Execution_Date";
-$SDK->createDirectory("$Output_directory/$Execution_Date");
+perluim::utils::createDirectory("$Output_directory/$Execution_Date");
 $Console->cleanDirectory("$Output_directory",$Cache_delay);
 
 #
@@ -447,7 +447,7 @@ sub checkProbes {
             checkNisBridge($hub->{robotname},$hub->{name},$find_ha,$ha_value);
         }
 
-        if($find_distsrv) {
+        if($find_distsrv && $deployment_mon eq "yes") {
             $Console->print('---------------------------------------',5);
             $Console->print('Checkup Distsrv jobs!');
             checkDistsrv($hub,$distsrv_port);
@@ -655,7 +655,7 @@ sub checkDistsrv {
         my $JOB_PDS = Nimbus::PDS->new($RES);
         my $count;
         for( $count = 0; my $JobNFO = $JOB_PDS->getTable("entry",PDS_PDS,$count); $count++) {
-            my $Job = new perluim::distsrvjob($JobNFO);
+            my $Job = new perluim::dtsrvjob($JobNFO);
             $Console->print("Processing Job number $count");
             next if $Job->{status} eq "finished";
 
@@ -818,7 +818,7 @@ sub breakApplication {
 # Call the main method 
 main();
 
- $Console->finalTime($time);
+$Console->finalTime($time);
 $| = 1; # Buffer I/O fix
 sleep(2);
 $Console->copyTo($Final_directory);
