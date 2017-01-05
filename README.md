@@ -8,15 +8,17 @@ CA UIM Self monitoring probe. This probe has been created to do self monitoring 
 - NisBridge Checkup (With HA Support) 
 - Probe on hub checkup with HA Support (Callback & Down state).
 - Hub robots intermediate and spooler checkup.
-- UMP Monitoring
+- (remote) UMP monitoring
+- Distsrv deployment monitoring.
+- Hub uptime (when a hub restarted)
 
 > Feel free to PR new monitoring 
 
 # Installation and configuration guide 
 
-> First of all, dont use nim_login and nim_password if you package the probe. Use these field when you run the script manually on the system. 
+> First of all, dont use nim_login and nim_password if you package the probe. Use these fields when you run the script manually on the system. 
 
-Dont forget you need perluim framework for this probe. Find the framework [HERE](https://github.com/fraxken/perluim)
+Dont forget you need perluim R3.0+ framework for this probe. Find the framework [HERE](https://github.com/fraxken/perluim)
 
 ### Setup section 
 
@@ -36,6 +38,35 @@ Dont forget you need perluim framework for this probe. Find the framework [HERE]
 | configuration | priority_on_ha | yes - no  | HA To rewrite 'alarm_on_probe_deactivated' to 1 on every probe (if ha_superiority is set to 'yes') |
 | configuration/alarms | intermediate | 1 - 0 | Launch alarms when we detect intermediate robot. |
 | configuration/alarms | spooler | 1 - 0 | Launch alarm when callback get_info fail on one robot spooler. |
+| configuration | check_hubuptime | yes - no | Check for hub restart and generate a new alarm |
+| configuration | uptime_seconds | number | Uptime in second for check_hubuptime |
+
+### UMP_Monitoring 
+
+Setup ump monitoring on your primary and secondary hub. Just put the name of yours UMP in the servers key.
+
+```xml
+<ump_monitoring>
+    servers = s00v09933535,s00v09933536
+    alarm_callback = ump_failcallback
+    alarm_probelist = ump_probelist_fail
+</ump_monitoring>
+```
+
+> This section is optional 
+
+### Deployment monitoring 
+
+Monitoring of distsrv deployment (checking the numbers of deployment and if deployments are unded a defined threshold).
+
+```xml
+<deployment_monitoring>
+    job_time_threshold = 600
+    max_jobs = 5000
+</deployment_monitoring>
+```
+
+> This section is optional 
 
 ### Probes_monitoring 
 
