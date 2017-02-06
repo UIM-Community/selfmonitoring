@@ -11,8 +11,9 @@ use perluim::log;
 use perluim::main;
 use perluim::alarmsmanager;
 use perluim::utils;
-use perluim::file;
+use perluim::filereader;
 use perluim::dtsrvjob;
+use perluim::filemap;
 use POSIX qw( strftime );
 use Time::Piece;
 
@@ -20,7 +21,7 @@ use Time::Piece;
 # Declare default script variables & declare log class.
 #
 my $time = time();
-my $version = "1.0";
+my $version = "1.3";
 my ($Console,$SDK,$Execution_Date,$Final_directory);
 $Execution_Date = perluim::utils::getDate();
 $Console = new perluim::log('selfmonitoring.log',5,0,'yes');
@@ -76,6 +77,7 @@ if(defined $CFG->{"deployment_monitoring"}) {
 
 # Declare alarms_manager
 my $alarm_manager = new perluim::alarmsmanager($CFG,"alarm_messages");
+my $filemap = new perluim::filemap('temporary_alarms.cfg');
 
 # Check if domain is correctly configured
 if(not defined($Domain)) {
@@ -178,7 +180,7 @@ sub main {
                     last WH; # Kill retry while.
                 }
                 $| = 1; # Buffer I/O fix
-                $SDK->doSleep(3); # Pause script for 3 seconds.
+                perluim::utils::doSleep(3); # Pause script for 3 seconds.
             }
 
             # Final success condition (if all try are failed!).
@@ -201,7 +203,7 @@ sub main {
                     last WH; # Kill retry while.
                 }
                 $| = 1; # Buffer I/O fix
-                $SDK->doSleep(3); # Pause script for 3 seconds.
+                perluim::utils::doSleep(3); # Pause script for 3 seconds.
             }
 
             # Final success condition (when all callback are failed).
@@ -231,7 +233,7 @@ sub main {
 sub checkRobots {
     my ($hub) = @_;
 
-    my ($RC,@RobotsList) = $hub->getLocalRobots();
+    my ($RC,@RobotsList) = $hub->local_robotsArray();
     if($RC == NIME_OK) {
 
         # Create array 
@@ -249,30 +251,66 @@ sub checkRobots {
         foreach my $robot (@RobotsList) {
             next if "$robot->{status}" eq "2";
 
+            my $int_identifier = "selfmon_intermediateRobot_$robot->{name}_controller";
+
             if("$robot->{status}" eq "1") {
                 push(@Arr_intermediateRobots,"$robot->{name}");
                 $Stats{intermediate}++;
 
                 if($GO_Intermediate && not $Audit) {
                     # Create new alarm!
-                    my $intermediate_robot = $alarm_manager->get('intermediate_robot');
-                    my ($RC_ALARM,$AlarmID) = $intermediate_robot->call({ 
-                        robotname => "$robot->{name}", 
-                        hubname => "$hub->{name}"
-                    });
 
-                    if($RC_ALARM == NIME_OK) {
-                        $Console->print("Alarm generated : $AlarmID - [$intermediate_robot->{severity}] - $intermediate_robot->{subsystem}");
+                    my $intermediate_robot = $alarm_manager->get('intermediate_robot');
+                    my %AlarmObject = (
+                        hubname => "$hub->{name}",
+                        robot => $robot,
+                        domain => "$Domain",
+                        probe => "selfmonitoring",
+                        supp_key => "$int_identifier",
+                        suppression => "$int_identifier"
+                    );
+                    my ($rc_alarm,$alarmid) = $intermediate_robot->customCall(\%AlarmObject);
+
+                    if($rc_alarm == NIME_OK) {
+                        $Console->print("Alarm generated : $alarmid - [$intermediate_robot->{severity}] - $intermediate_robot->{subsystem}");
+                        my %Args = (
+                            suppkey => "$int_identifier"
+                        );
+                        $filemap->set("$int_identifier",\%Args);
                     }
                     else {
                         $Console->print("Failed to create alarm!",1);
                     }
                 }
             }
+            elsif( $filemap->has("$int_identifier") ) {
+
+                my $intermediate_robot = $alarm_manager->get('intermediate_robot');
+                my %AlarmObject = (
+                    severity => 0,
+                    hubname => "$hub->{name}",
+                    robot => $robot,
+                    domain => "$Domain",
+                    probe => "selfmonitoring",
+                    supp_key => "$int_identifier",
+                    suppression => "$int_identifier"
+                );
+                my ($rc_alarm,$alarmid) = $intermediate_robot->customCall(\%AlarmObject);
+
+                if($rc_alarm == NIME_OK) {
+                    $Console->print("Clear generated : $alarmid - [0] - $intermediate_robot->{subsystem}");
+                    $filemap->delete("$int_identifier");
+                }
+                else {
+                    $Console->print("Failed to generate Clear!",1);
+                }
+                    
+            }
 
             if($GO_Spooler) {
                 # Callback spooler!
                 my $S_RC = spoolerCallback($robot->{name});
+                my $suppkey_spooler = "selfmon_spoolercb_$robot->{name}_spooler";
                 if($S_RC != NIME_OK) {
                     push(@Arr_spooler,"$robot->{name}");
                     $Stats{spooler}++;
@@ -280,18 +318,50 @@ sub checkRobots {
                     if(not $Audit) {
                         # Generate alarm!
                         my $spooler_fail = $alarm_manager->get('spooler_fail');
-                        my ($RC_ALARM,$AlarmID) = $spooler_fail->call({ 
-                            robotname => "$robot->{name}", 
-                            rc => "$S_RC"
-                        });
+                        my %AlarmObject = (
+                            hubname => "$hub->{name}",
+                            robot => $robot,
+                            domain => "$Domain",
+                            probe => "selfmonitoring",
+                            supp_key => "$suppkey_spooler",
+                            suppression => "$suppkey_spooler"
+                        );
+                        my ($rc_alarm,$alarmid) = $spooler_fail->customCall(\%AlarmObject);
 
-                        if($RC_ALARM == NIME_OK) {
-                            $Console->print("Alarm generated : $AlarmID - [$spooler_fail->{severity}] - $spooler_fail->{subsystem}");
+                        if($rc_alarm == NIME_OK) {
+                            $Console->print("Alarm generated : $alarmid - [$spooler_fail->{severity}] - $spooler_fail->{subsystem}");
+                            my %Args = (
+                                suppkey => "$suppkey_spooler"
+                            );
+                            $filemap->set("$suppkey_spooler",\%Args);
                         }
                         else {
                             $Console->print("Failed to create alarm!",1);
                         }
                     }
+                }
+                elsif( $filemap->has("$suppkey_spooler") ) {
+
+                    my $spooler_fail = $alarm_manager->get('spooler_fail');
+                    my %AlarmObject = (
+                        severity => 0,
+                        hubname => "$hub->{name}",
+                        robot => $robot,
+                        domain => "$Domain",
+                        probe => "selfmonitoring",
+                        supp_key => "$suppkey_spooler",
+                        suppression => "$suppkey_spooler"
+                    );
+                    my ($rc_alarm,$alarmid) = $spooler_fail->customCall(\%AlarmObject);
+
+                    if($rc_alarm == NIME_OK) {
+                        $Console->print("Clear generated : $alarmid - [0] - $spooler_fail->{subsystem}");
+                        $filemap->delete("$suppkey_spooler");
+                    }
+                    else {
+                        $Console->print("Failed to generate Clear!",1);
+                    }
+
                 }
             }
 
@@ -305,8 +375,8 @@ sub checkRobots {
 
         # Write file to the disk.
         $Console->print("Write output files to the disk..");
-        new perluim::file()->save("output/$Execution_Date/intermediate_servers.txt",\@Arr_intermediateRobots);
-        new perluim::file()->save("output/$Execution_Date/failedspooler_servers.txt",\@Arr_spooler);
+        new perluim::filereader()->save("output/$Execution_Date/intermediate_servers.txt",\@Arr_intermediateRobots);
+        new perluim::filereader()->save("output/$Execution_Date/failedspooler_servers.txt",\@Arr_spooler);
 
         $Console->print('---------------------------------------',5);
 
@@ -340,7 +410,9 @@ sub spoolerCallback {
 sub checkProbes {
     my ($hub) = @_;
     my ($RC,@ProbesList) = $hub->local_probeList();
-    if($RC == NIME_OK) {
+    my ($RC_Getinfo,$RobotInfo) = $hub->local_getInfo(); 
+
+    if($RC == NIME_OK && $RC_Getinfo == NIME_OK) {
         $Console->print("hub->ProbeList() has been executed successfully!");
         my $find_nas = 0;
         my $find_ha = 0;
@@ -401,11 +473,34 @@ sub checkProbes {
                     my $ha_superiority  = $ProbeCallback{$probe->{name}}{ha_superiority};
                     my $find            = $ProbeCallback{$probe->{name}}{find};
                     my $check_alarmName = $ProbeCallback{$probe->{name}}{check_alarmName};
+                    my $suppkey_poffline = "selfmon_probeoffline_$hub->{robotname}_$probe->{name}";
 
                     # Verify if the probe is active or not!
+                    
                     if($probe->{active} == 1) {
+
+                        if($filemap->has($suppkey_poffline)) {
+                            my $probe_offline = $alarm_manager->get('probe_offline');
+                            my ($RC_ALARM,$AlarmID) = $probe_offline->customCall({ 
+                                severity => 0,
+                                probe => "$probe->{name}",
+                                robotname => $hub->{robotname},
+                                source => "$hub->{ip}",
+                                supp_key => "$suppkey_poffline",
+                                suppression => "$suppkey_poffline"
+                            });
+
+                            if($RC_ALARM == NIME_OK) {
+                                $Console->print("Generate clear : $AlarmID - [0] - $probe_offline->{subsystem}");
+                                $filemap->delete($suppkey_poffline)
+                            }
+                            else {
+                                $Console->print("Failed to generate clear!",1);
+                            }
+
+                        }
                         if(defined($callback)) {
-                            doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback,$find,$check_alarmName) if not $Audit;
+                            doCallback($hub->{robotname},$hub->{name},$probe->{name},$probe->{port},$callback,$find,$check_alarmName,$RobotInfo) if not $Audit;
                         }
                         else {
                             $Console->print("Callback is not defined!");
@@ -418,13 +513,26 @@ sub checkProbes {
                         if(not $Audit and $callAlarms or ($find_ha and $Overwrite_HA eq "yes" and "$ha_value" eq "0" and $ha_superiority eq "yes" ) ) {
                             $Console->print("Probe is inactive, generate new alarm!",2);
                             my $probe_offline = $alarm_manager->get('probe_offline');
-                            my ($RC_ALARM,$AlarmID) = $probe_offline->call({ 
-                                probe => "$probe->{name}", 
-                                hubname => "$hub->{name}"
+
+                            my ($RC_ALARM,$AlarmID) = $probe_offline->customCall({ 
+                                probe => "$probe->{name}",
+                                robotname => $hub->{robotname},
+                                domain => $Domain,
+                                hubname => "$hub->{name}",
+                                source => "$hub->{ip}",
+                                origin => $RobotInfo->{origin},
+                                dev_id => $RobotInfo->{robot_device_id},
+                                usertag1 => $RobotInfo->{os_user1},
+                                usertag2 => $RobotInfo->{os_user2},
+                                supp_key => "$suppkey_poffline",
+                                suppression => "$suppkey_poffline"
                             });
 
                             if($RC_ALARM == NIME_OK) {
                                 $Console->print("Alarm generated : $AlarmID - [$probe_offline->{severity}] - $probe_offline->{subsystem}");
+                                $filemap->set($suppkey_poffline,{
+                                    suppkey => $suppkey_poffline
+                                });
                             }
                             else {
                                 $Console->print("Failed to create alarm!",1);
@@ -444,13 +552,13 @@ sub checkProbes {
         if($find_nas && $Check_NisBridge eq "yes") {
             $Console->print('---------------------------------------',5);
             $Console->print('Checkup NisBridge configuration');
-            checkNisBridge($hub->{robotname},$hub->{name},$find_ha,$ha_value);
+            checkNisBridge($hub->{robotname},$hub->{name},$find_ha,$ha_value,$RobotInfo);
         }
 
         if($find_distsrv && $deployment_mon eq "yes") {
             $Console->print('---------------------------------------',5);
             $Console->print('Checkup Distsrv jobs!');
-            checkDistsrv($hub,$distsrv_port);
+            checkDistsrv($hub,$distsrv_port,$RobotInfo);
             $Console->print('---------------------------------------',5);
         }
 
@@ -459,21 +567,13 @@ sub checkProbes {
     return 0;
 }
 
-# 
-# String strBeginWith($str,$expected);
-# used in doCallback();
-#
-sub strBeginWith {
-    return substr($_[0], 0, length($_[1])) eq $_[1];
-}
-
 #
 # Method to do a callback on a specific probe.
 # doCallback($robotname,$probeName,$probePort,$callback,$find)
 # used in checkProbes() method.
 # 
 sub doCallback {
-    my ($robotname,$hubname,$probeName,$probePort,$callback,$check_keys,$check_alarmName) = @_;
+    my ($robotname,$hubname,$probeName,$probePort,$callback,$check_keys,$check_alarmName,$RobotInfo) = @_;
     my $PDS = pdsCreate();
 
     # Special rule for NAS only!
@@ -486,25 +586,59 @@ sub doCallback {
     pdsDelete($PDS);
 
     $Console->print("Return code : $CALLBACK_RC",4);
+    my $suppkey_fail = "selfmon_cbfail_${robotname}_${probeName}";
     if($CALLBACK_RC != NIME_OK) {
 
         $Console->print("Return code is not OK ! Generating a alarm.",2);
         my $callback_fail = $alarm_manager->get('callback_fail');
-        my ($RC,$AlarmID) = $callback_fail->call({ 
+        my ($RC,$AlarmID) = $callback_fail->customCall({ 
             callback => "$callback", 
+            robotname => "$robotname",
+            source => "$robotname",
             probe => "$probeName", 
             hubname => "$hubname",
-            port => "$probePort"
+            origin => $RobotInfo->{origin},
+            dev_id => $RobotInfo->{robot_device_id},
+            usertag1 => $RobotInfo->{os_user1},
+            usertag2 => $RobotInfo->{os_user2},
+            port => "$probePort",
+            supp_key => "$suppkey_fail",
+            suppression => "$suppkey_fail"
         });
 
         if($RC == NIME_OK) {
             $Console->print("Alarm generated : $AlarmID - [$callback_fail->{severity}] - $callback_fail->{subsystem}");
+            $filemap->set($suppkey_fail);
         }
         else {
             $Console->print("Failed to create alarm!",1);
         }
     }
     else {
+
+        if($filemap->has($suppkey_fail)) {
+            my $callback_fail = $alarm_manager->get('callback_fail');
+            my ($RC,$AlarmID) = $callback_fail->customCall({ 
+                severity => 0,
+                callback => "$callback", 
+                source => "$robotname",
+                robotname => "$robotname",
+                probe => "$probeName", 
+                hubname => "$hubname",
+                port => "$probePort",
+                supp_key => "$suppkey_fail",
+                suppression => "$suppkey_fail"
+            });
+
+            if($RC == NIME_OK) {
+                $Console->print("Alarm clear : $AlarmID - [$callback_fail->{severity}] - $callback_fail->{subsystem}");
+                $filemap->delete($suppkey_fail);
+            }
+            else {
+                $Console->print("Failed to generate alarm clear!",1);
+            }
+        }
+
         if(defined($check_keys)) {
             $Console->print("doCallback: Entering into check_keys");
             my $key_ok = 0;
@@ -526,7 +660,7 @@ sub doCallback {
                                 $expected_value  = $check_keys->{$_}->{$id}->{$sec_key};
                                 next if not defined($object_value);
 
-                                my $strBegin = strBeginWith($expected_value,"<<");
+                                my $strBegin = perluim::utils::strBeginWith($expected_value,"<<");
                                 my $condition = $strBegin ? $object_value <= substr($expected_value,2) : $object_value eq $expected_value;
 
                                 if(not $condition) {
@@ -581,7 +715,7 @@ sub doCallback {
 # used in checkProbes() method
 #
 sub checkNisBridge {
-    my ($robotname,$hubname,$ha,$ha_value) = @_; 
+    my ($robotname,$hubname,$ha,$ha_value,$RobotInfo) = @_; 
     my $nis_value;
 
     # Generate alarm variable!
@@ -614,26 +748,59 @@ sub checkNisBridge {
     }
 
     # Generate alarm
+    my $suppkey_nisbridge = "selfmon_nisfail_$robotname_nas";
     if($generate_alarm) {
         $Console->print("Generating new alarm for NIS_Bridge",2);
         $Console->print("Nis_bridge => $nis_value",4);
         $Console->print("HA connected => $ha_value",4);
         my $nis_alarm = $alarm_manager->get('nisbridge');
-        my ($RC,$AlarmID) = $nis_alarm->call({ 
+        my ($RC,$AlarmID) = $nis_alarm->customCall({ 
             robotname => "$robotname", 
             hubname => "$hubname",
             nis => "$nis_value",
-            ha => "$ha_value"
+            ha => "$ha_value",
+            origin => $RobotInfo->{origin},
+            dev_id => $RobotInfo->{robot_device_id},
+            usertag1 => $RobotInfo->{os_user1},
+            usertag2 => $RobotInfo->{os_user2},
+            supp_key => "$suppkey_nisbridge",
+            suppression => "$suppkey_nisbridge"
         });
 
         if($RC == NIME_OK) {
             $Console->print("Alarm generated : $AlarmID - [$nis_alarm->{severity}] - $nis_alarm->{subsystem}");
+            $filemap->set($suppkey_nisbridge);
         }
         else {
             $Console->print("Failed to create alarm!",1);
         }
     }
     else {
+
+        if($filemap->has($suppkey_nisbridge)) {
+            my $nis_alarm = $alarm_manager->get('nisbridge');
+            my ($RC,$AlarmID) = $nis_alarm->customCall({ 
+                severity => 0,
+                robotname => "$robotname", 
+                hubname => "$hubname",
+                nis => "$nis_value",
+                ha => "$ha_value",
+                origin => $RobotInfo->{origin},
+                dev_id => $RobotInfo->{robot_device_id},
+                usertag1 => $RobotInfo->{os_user1},
+                usertag2 => $RobotInfo->{os_user2},
+                supp_key => "$suppkey_nisbridge",
+                suppression => "$suppkey_nisbridge"
+            });
+
+            if($RC == NIME_OK) {
+                $Console->print("Alarm clear : $AlarmID - [0] - $nis_alarm->{subsystem}");
+                $filemap->delete($suppkey_nisbridge);
+            }
+            else {
+                $Console->print("Failed to generate clear alarm!",1);
+            }
+        }
         $Console->print("Nis_bridge ... OK!");
     }
 }
@@ -644,13 +811,41 @@ sub checkNisBridge {
 # used in main() method
 #
 sub checkDistsrv {
-    my ($hub,$distsrv_port) = @_; 
+    my ($hub,$distsrv_port,$RobotInfo) = @_; 
 
     my $pds = pdsCreate(); 
     my ($RC,$RES) = nimRequest($hub->{robotname},$distsrv_port,"job_list",$pds);
     pdsDelete($pds); 
 
+    my $suppkey_distsrv = "selfmon_cbfail_$hub->{robotname}_distsrv";
+
     if($RC == NIME_OK) {
+
+        if($filemap->has($suppkey_distsrv)) {
+            my $callback_fail = $alarm_manager->get("callback_fail");
+            my ($RC_ALARM,$AlarmID) = $callback_fail->customCall({ 
+                severity => 0,
+                callback => "job_list",
+                robotname => "$hub->{robotname}",
+                probe => "distsrv",
+                hubname => "$hub->{name}",
+                source => "$hub->{ip}",
+                origin => $RobotInfo->{origin},
+                dev_id => $RobotInfo->{robot_device_id},
+                usertag1 => $RobotInfo->{os_user1},
+                usertag2 => $RobotInfo->{os_user2},
+                supp_key => "$suppkey_distsrv",
+                suppression => "$suppkey_distsrv"
+            });
+
+            if($RC_ALARM == NIME_OK) {
+                $Console->print("Alarm clear : $AlarmID - [0] - $callback_fail->{subsystem}");
+                $filemap->delete($suppkey_distsrv);
+            }
+            else {
+                $Console->print("Failed to generate alarm clear!",1);
+            }
+        }
 
         my $JOB_PDS = Nimbus::PDS->new($RES);
         my $count;
@@ -718,14 +913,23 @@ sub checkDistsrv {
     else {
         if(not $Audit) {
             my $callback_fail = $alarm_manager->get("callback_fail");
-            my ($RC_ALARM,$AlarmID) = $callback_fail->call({ 
+            my ($RC_ALARM,$AlarmID) = $callback_fail->customCall({ 
                 callback => "job_list",
                 probe => "distsrv",
-                hubname => "$hub->{name}"
+                robotname => "$hub->{robotname}",
+                hubname => "$hub->{name}",
+                source => "$hub->{ip}",
+                origin => $RobotInfo->{origin},
+                dev_id => $RobotInfo->{robot_device_id},
+                usertag1 => $RobotInfo->{os_user1},
+                usertag2 => $RobotInfo->{os_user2},
+                supp_key => "$suppkey_distsrv",
+                suppression => "$suppkey_distsrv"
             });
 
             if($RC_ALARM == NIME_OK) {
                 $Console->print("Alarm generated : $AlarmID - [$callback_fail->{severity}] - $callback_fail->{subsystem}");
+                $filemap->set($suppkey_distsrv);
             }
             else {
                 $Console->print("Failed to create alarm!",1);
@@ -741,14 +945,48 @@ sub checkDistsrv {
 #
 sub checkUMP {
     my ($hub) = @_;
+    my ($RC_Getinfo,$RobotInfo) = $hub->local_getInfo(); 
+
+    if($RC_Getinfo != NIME_OK) {
+        return;
+    }
+
     foreach(@UMPServers) {
         $Console->print("Processing check on ump $_"); 
+
+        my $suppkey_ump_probes = "selfmon_probeslistfail_$hub->{robotname}_ump";
+        my $suppkey_ump_cbfail = "selfmon_cbfail_$hub->{robotname}_ump";
 
         my $ERR = 0;
         my $pds = new Nimbus::PDS();
         $pds->put('name','wasp',PDS_PCH);
         my ($RC,$RES) = nimRequest("$_",48000,"probe_list",$pds->data());
         if($RC == NIME_OK) {
+
+            if($filemap->has($suppkey_ump_probes)) {
+                my $ump_probelist_fail = $alarm_manager->get("$ump_alarm_probelist");
+                my ($RC_ALARM,$AlarmID) = $ump_probelist_fail->call({ 
+                    severity => 0,
+                    robotname => "$hub->{robotname}",
+                    umpName => "$_",
+                    source => "$hub->{ip}",
+                    origin => $RobotInfo->{origin},
+                    dev_id => $RobotInfo->{robot_device_id},
+                    usertag1 => $RobotInfo->{os_user1},
+                    usertag2 => $RobotInfo->{os_user2},
+                    supp_key => "$suppkey_ump_probes",
+                    suppression => "$suppkey_ump_probes"
+                });
+
+                if($RC_ALARM == NIME_OK) {
+                    $Console->print("Alarm clear : $AlarmID - [$ump_probelist_fail->{severity}] - $ump_probelist_fail->{subsystem}");
+                    $filemap->delete($suppkey_ump_probes);
+                }
+                else {
+                    $Console->print("Failed to generate alarm clear!",1);
+                }
+            }
+
             $Console->print("Callback probe_list executed succesfully!");
             my $hash = Nimbus::PDS->new($RES)->asHash();
 
@@ -758,11 +996,20 @@ sub checkUMP {
                 $Console->print("Failed to execute callback get_info on wasp probe on $_",1);
                 my $ump_failcallback = $alarm_manager->get("$ump_alarm_callback");
                 my ($RC_ALARM,$AlarmID) = $ump_failcallback->call({ 
-                    umpName => "$_"
+                    umpName => "$_",
+                    robotname => "$hub->{robotname}",
+                    source => "$hub->{ip}",
+                    origin => $RobotInfo->{origin},
+                    dev_id => $RobotInfo->{robot_device_id},
+                    usertag1 => $RobotInfo->{os_user1},
+                    usertag2 => $RobotInfo->{os_user2},
+                    supp_key => "$suppkey_ump_cbfail",
+                    suppression => "$suppkey_ump_cbfail"
                 });
 
                 if($RC_ALARM == NIME_OK) {
                     $Console->print("Alarm generated : $AlarmID - [$ump_failcallback->{severity}] - $ump_failcallback->{subsystem}");
+                    $filemap->set($suppkey_ump_cbfail);
                 }
                 else {
                     $Console->print("Failed to create alarm!",1);
@@ -770,6 +1017,30 @@ sub checkUMP {
             }
             else {
                 $Console->print("Callback get_info return ok...");
+                
+                if($filemap->has($suppkey_ump_cbfail)) {
+                    my $ump_failcallback = $alarm_manager->get("$ump_alarm_callback");
+                    my ($RC_ALARM,$AlarmID) = $ump_failcallback->call({ 
+                        severity => 0,
+                        robotname => "$hub->{robotname}",
+                        umpName => "$_",
+                        source => "$hub->{ip}",
+                        origin => $RobotInfo->{origin},
+                        dev_id => $RobotInfo->{robot_device_id},
+                        usertag1 => $RobotInfo->{os_user1},
+                        usertag2 => $RobotInfo->{os_user2},
+                        supp_key => "$suppkey_ump_cbfail",
+                        suppression => "$suppkey_ump_cbfail"
+                    });
+
+                    if($RC_ALARM == NIME_OK) {
+                        $Console->print("Alarm clear : $AlarmID - [$ump_failcallback->{severity}] - $ump_failcallback->{subsystem}");
+                        $filemap->delete($suppkey_ump_cbfail);
+                    }
+                    else {
+                        $Console->print("Failed to generate alarm clear!",1);
+                    }
+                }
             }
         }
         else {
@@ -777,11 +1048,20 @@ sub checkUMP {
             if(not $Audit) {
                 my $ump_probelist_fail = $alarm_manager->get("$ump_alarm_probelist");
                 my ($RC_ALARM,$AlarmID) = $ump_probelist_fail->call({ 
-                    umpName => "$_"
+                    umpName => "$_",
+                    robotname => "$hub->{robotname}",
+                    source => "$hub->{ip}",
+                    origin => $RobotInfo->{origin},
+                    dev_id => $RobotInfo->{robot_device_id},
+                    usertag1 => $RobotInfo->{os_user1},
+                    usertag2 => $RobotInfo->{os_user2},
+                    supp_key => "$suppkey_ump_probes",
+                    suppression => "$suppkey_ump_probes"
                 });
 
                 if($RC_ALARM == NIME_OK) {
                     $Console->print("Alarm generated : $AlarmID - [$ump_probelist_fail->{severity}] - $ump_probelist_fail->{subsystem}");
+                    $filemap->set($suppkey_ump_probes);
                 }
                 else {
                     $Console->print("Failed to create alarm!",1);
@@ -798,6 +1078,8 @@ sub checkUMP {
 # 
 sub trap_die {
     my ($err) = @_;
+    $filemap->writeToDisk();
+    $Console->finalTime($time);
 	$Console->print("Program is exiting abnormally : $err",0);
     $| = 1; # Buffer I/O fix
     sleep(2);
@@ -808,6 +1090,8 @@ sub trap_die {
 # When application is breaked with CTRL+C
 #
 sub breakApplication { 
+    $filemap->writeToDisk();
+    $Console->finalTime($time);
     $Console->print("\n\n Application breaked with CTRL+C \n\n",0);
     $| = 1; # Buffer I/O fix
     sleep(2);
@@ -817,6 +1101,7 @@ sub breakApplication {
 
 # Call the main method 
 main();
+$filemap->writeToDisk();
 
 $Console->finalTime($time);
 $| = 1; # Buffer I/O fix
