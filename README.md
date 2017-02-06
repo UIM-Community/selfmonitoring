@@ -18,7 +18,7 @@ CA UIM Self monitoring probe. This probe has been created to do self monitoring 
 
 > First of all, dont use nim_login and nim_password if you package the probe. Use these fields when you run the script manually on the system. 
 
-Dont forget you need perluim R3.0+ framework for this probe. Find the framework [HERE](https://github.com/fraxken/perluim)
+Dont forget you need perluim R4.0 framework for this probe. Find the framework [HERE](https://github.com/fraxken/perluim)
 
 ### Setup section 
 
@@ -111,7 +111,7 @@ Set `ha_superiority` to `no` if you dont want HA to rewrite the configuration.
 </probes_monitoring>
 ```
 
-## Alarms configuration 
+## Alarms configuration (not updated).
 
 Alarms message are configurable in the alarms_messages section. Variable are setted in the Script (so refer to this guide to use variables).
 
