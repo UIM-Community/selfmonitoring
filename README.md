@@ -47,17 +47,17 @@ Setup ump monitoring on your primary and secondary hub. Just put the name of you
 
 ```xml
 <ump_monitoring>
-    servers = s00v09933535,s00v09933536
+    servers = ump1robotname,ump2robotname
     alarm_callback = ump_failcallback
     alarm_probelist = ump_probelist_fail
 </ump_monitoring>
 ```
 
-> This section is optional 
+> **TIPS :** This section is optional 
 
 ### Deployment monitoring 
 
-Monitoring of distsrv deployment (checking the numbers of deployment and if deployments are unded a defined threshold).
+Monitoring of distsrv deployment (checking the numbers of deployment and if deployments time are under a defined threshold).
 
 ```xml
 <deployment_monitoring>
@@ -66,15 +66,15 @@ Monitoring of distsrv deployment (checking the numbers of deployment and if depl
 </deployment_monitoring>
 ```
 
-> This section is optional 
+> **TIPS :** This section is optional 
 
 ### Probes_monitoring 
 
 Setup your probes here. Callback is an optional key (no callback is the equivalent of probe down/up checkup). Set `alarm_on_probe_deactivated` to 0 if you want to not launch a alarm when the probe is offline. 
 
-> Warning : alarm_on_probe_deactivated is rewrited by HA connected 0 if you have priority_on_ha set to yes.
+> **Warning :** alarm_on_probe_deactivated is rewrited by HA connected 0 if you have priority_on_ha set to yes.
 
-Set `ha_superiority` to `no` if you dont want HA to rewrite the configuration.
+Set `ha_superiority` to `no` if you dont want HA to rewrite the configuration of this profile. (At root level if you dont want to rewrite for all profiles).
 
 ##### Exemples 
 
