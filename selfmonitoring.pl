@@ -21,7 +21,7 @@ use Time::Piece;
 # Declare default script variables & declare log class.
 #
 my $time = time();
-my $version = "1.3";
+my $version = "1.5";
 my ($Console,$SDK,$Execution_Date,$Final_directory);
 $Execution_Date = perluim::utils::getDate();
 $Console = new perluim::log('selfmonitoring.log',5,0,'yes');
@@ -264,6 +264,7 @@ sub checkRobots {
                     my %AlarmObject = (
                         hubname => "$hub->{name}",
                         robot => $robot,
+                        origin => $robot->{origin},
                         domain => "$Domain",
                         probe => "selfmonitoring",
                         supp_key => "$int_identifier",
@@ -290,6 +291,7 @@ sub checkRobots {
                     severity => 0,
                     hubname => "$hub->{name}",
                     robot => $robot,
+                    origin => $robot->{origin},
                     domain => "$Domain",
                     probe => "selfmonitoring",
                     supp_key => "$int_identifier",
@@ -322,6 +324,7 @@ sub checkRobots {
                             hubname => "$hub->{name}",
                             robot => $robot,
                             domain => "$Domain",
+                            origin => $robot->{origin},
                             probe => "selfmonitoring",
                             supp_key => "$suppkey_spooler",
                             suppression => "$suppkey_spooler"
@@ -348,6 +351,7 @@ sub checkRobots {
                         hubname => "$hub->{name}",
                         robot => $robot,
                         domain => "$Domain",
+                        origin => $robot->{origin},
                         probe => "selfmonitoring",
                         supp_key => "$suppkey_spooler",
                         suppression => "$suppkey_spooler"
@@ -483,9 +487,15 @@ sub checkProbes {
                             my $probe_offline = $alarm_manager->get('probe_offline');
                             my ($RC_ALARM,$AlarmID) = $probe_offline->customCall({ 
                                 severity => 0,
-                                probe => "$probe->{name}",
+                                domain => $Domain,
+                                probeName => "$probe->{name}",
+                                probe => "selfmonitoring",
+                                origin => $RobotInfo->{origin},
                                 robotname => $hub->{robotname},
                                 source => "$hub->{ip}",
+                                dev_id => $RobotInfo->{robot_device_id},
+                                usertag1 => $RobotInfo->{os_user1},
+                                usertag2 => $RobotInfo->{os_user2},
                                 supp_key => "$suppkey_poffline",
                                 suppression => "$suppkey_poffline"
                             });
@@ -495,7 +505,7 @@ sub checkProbes {
                                 $filemap->delete($suppkey_poffline)
                             }
                             else {
-                                $Console->print("Failed to generate clear!",1);
+                                $Console->print("Failed to generate clear! (RC: $RC_ALARM)",1);
                             }
 
                         }
@@ -515,7 +525,8 @@ sub checkProbes {
                             my $probe_offline = $alarm_manager->get('probe_offline');
 
                             my ($RC_ALARM,$AlarmID) = $probe_offline->customCall({ 
-                                probe => "$probe->{name}",
+                                probeName => "$probe->{name}",
+                                probe => "selfmonitoring",
                                 robotname => $hub->{robotname},
                                 domain => $Domain,
                                 hubname => "$hub->{name}",
@@ -535,7 +546,7 @@ sub checkProbes {
                                 });
                             }
                             else {
-                                $Console->print("Failed to create alarm!",1);
+                                $Console->print("Failed to create alarm! (RC: $RC_ALARM)",1);
                             }
                             
                         }
@@ -593,9 +604,11 @@ sub doCallback {
         my $callback_fail = $alarm_manager->get('callback_fail');
         my ($RC,$AlarmID) = $callback_fail->customCall({ 
             callback => "$callback", 
+            domain => $Domain,
             robotname => "$robotname",
             source => "$robotname",
-            probe => "$probeName", 
+            probeName => "$probeName", 
+            probe => "selfmonitoring",
             hubname => "$hubname",
             origin => $RobotInfo->{origin},
             dev_id => $RobotInfo->{robot_device_id},
@@ -611,7 +624,7 @@ sub doCallback {
             $filemap->set($suppkey_fail);
         }
         else {
-            $Console->print("Failed to create alarm!",1);
+            $Console->print("Failed to create alarm! (RC: $RC)",1);
         }
     }
     else {
@@ -620,10 +633,16 @@ sub doCallback {
             my $callback_fail = $alarm_manager->get('callback_fail');
             my ($RC,$AlarmID) = $callback_fail->customCall({ 
                 severity => 0,
+                domain => $Domain,
                 callback => "$callback", 
                 source => "$robotname",
                 robotname => "$robotname",
-                probe => "$probeName", 
+                origin => $RobotInfo->{origin},
+                dev_id => $RobotInfo->{robot_device_id},
+                usertag1 => $RobotInfo->{os_user1},
+                usertag2 => $RobotInfo->{os_user2},
+                probeName => "$probeName", 
+                probe => "selfmonitoring",
                 hubname => "$hubname",
                 port => "$probePort",
                 supp_key => "$suppkey_fail",
@@ -635,7 +654,7 @@ sub doCallback {
                 $filemap->delete($suppkey_fail);
             }
             else {
-                $Console->print("Failed to generate alarm clear!",1);
+                $Console->print("Failed to generate alarm clear! (RC: $RC)",1);
             }
         }
 
@@ -748,7 +767,7 @@ sub checkNisBridge {
     }
 
     # Generate alarm
-    my $suppkey_nisbridge = "selfmon_nisfail_$robotname_nas";
+    my $suppkey_nisbridge = "selfmon_nisfail_${robotname}_nas";
     if($generate_alarm) {
         $Console->print("Generating new alarm for NIS_Bridge",2);
         $Console->print("Nis_bridge => $nis_value",4);
@@ -757,6 +776,7 @@ sub checkNisBridge {
         my ($RC,$AlarmID) = $nis_alarm->customCall({ 
             robotname => "$robotname", 
             hubname => "$hubname",
+            domain => $Domain,
             nis => "$nis_value",
             ha => "$ha_value",
             origin => $RobotInfo->{origin},
@@ -783,6 +803,7 @@ sub checkNisBridge {
                 severity => 0,
                 robotname => "$robotname", 
                 hubname => "$hubname",
+                domain => $Domain,
                 nis => "$nis_value",
                 ha => "$ha_value",
                 origin => $RobotInfo->{origin},
@@ -827,6 +848,7 @@ sub checkDistsrv {
                 severity => 0,
                 callback => "job_list",
                 robotname => "$hub->{robotname}",
+                domain => $Domain,
                 probe => "distsrv",
                 hubname => "$hub->{name}",
                 source => "$hub->{ip}",
@@ -916,6 +938,7 @@ sub checkDistsrv {
             my ($RC_ALARM,$AlarmID) = $callback_fail->customCall({ 
                 callback => "job_list",
                 probe => "distsrv",
+                domain => $Domain,
                 robotname => "$hub->{robotname}",
                 hubname => "$hub->{name}",
                 source => "$hub->{ip}",
@@ -969,6 +992,7 @@ sub checkUMP {
                     severity => 0,
                     robotname => "$hub->{robotname}",
                     umpName => "$_",
+                    domain => $Domain,
                     source => "$hub->{ip}",
                     origin => $RobotInfo->{origin},
                     dev_id => $RobotInfo->{robot_device_id},
@@ -999,6 +1023,7 @@ sub checkUMP {
                     umpName => "$_",
                     robotname => "$hub->{robotname}",
                     source => "$hub->{ip}",
+                    domain => $Domain,
                     origin => $RobotInfo->{origin},
                     dev_id => $RobotInfo->{robot_device_id},
                     usertag1 => $RobotInfo->{os_user1},
