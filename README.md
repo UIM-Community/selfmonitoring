@@ -115,13 +115,35 @@ Set `ha_superiority` to `no` if you dont want HA to rewrite the configuration of
 
 Alarms message are configurable in the alarms_messages section. Variable are setted in the Script (so refer to this guide to use variables).
 
+### Alarms default fields name
+
+| Alarms default fields name |
+| --- |
+| origin |
+| domain |
+| source |
+| dev_id |
+| usertag2 |
+| usertag1 |
+| supp_key |
+| probe |
+| robot |
+| rc |
+
+### Alarms custom field(s)
+
 | Callback | Variables |
 | --- | --- |
-| callback_fail | $callback, $probe, $hubname |
-| probe_offline | $probe, $hubname |
-| spooler_fail | $robotname, $rc |
-| intermediate_robot | $hubname, $robotname |
-| nisbridge | $hubname, $robotname |
+| callback_fail | $callback, $probeName, $hubname |
+| probe_offline | $probeName, $hubname |
+| spooler_fail | $hubname |
+| intermediate_robot | $hubname |
+| nisbridge | $hubname, $robotname, $nis, $ha |
+| distsrv_deployment | $jobid, $pkgName, $started, $diff, $hubname, $robotName |
+| distsrv_maxjobs | $max, $count, $hubname, $robotName |
+| ump_probelist_fail | $robotname, $umpName |
+| ump_failcallback | $robotname, $umpName |
+| hub_restart | $second, $hubName | 
 
 You can add easily your own variables in the code, just search for callback name. You will find a code like this : 
 
