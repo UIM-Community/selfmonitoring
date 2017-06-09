@@ -21,7 +21,7 @@ use Time::Piece;
 # Declare default script variables & declare log class.
 #
 my $time = time();
-my $version = "1.5";
+my $version = "1.5.1";
 my ($Console,$SDK,$Execution_Date,$Final_directory);
 $Execution_Date = perluim::utils::getDate();
 $Console = new perluim::log('selfmonitoring.log',5,0,'yes');
@@ -52,6 +52,7 @@ my $GO_Spooler          = $CFG->{"configuration"}->{"alarms"}->{"spooler"} || 0;
 my $Check_NisBridge     = $CFG->{"configuration"}->{"check_nisbridge"} || "no";
 my $Overwrite_HA        = $CFG->{"configuration"}->{"priority_on_ha"} || "no";
 my $Checkuptime         = $CFG->{"configuration"}->{"check_hubuptime"} || "no";
+my $Maxrobots_per_hub   = $CFG->{"configuration"}->{"maxrobots_per_hub"} || 1250;
 my $Uptime_value        = $CFG->{"configuration"}->{"uptime_seconds"} || 600;
 my $probes_mon          = 0;
 my $ump_mon             = 0;
@@ -139,26 +140,74 @@ $Console->cleanDirectory("$Output_directory",$Cache_delay);
 # 
 sub main {
 
+    my ($RC_LR,$localRobot) = $SDK->getLocalRobot();
     my ($RC,$hub) = $SDK->getLocalHub();
-    if($RC == NIME_OK) {
+    if($RC == NIME_OK && $RC_LR == NIME_OK) {
         $Console->print("Start processing $hub->{name} !!!",5);
         $Console->print('---------------------------------------',5);
 
+        my $suppkey_uptime = "selfmonitoring_uptime";
         if($Checkuptime eq "yes") {
             $Console->print("Check hub uptime !");
             if($hub->{uptime} <= $Uptime_value) {
                 $Console->print("Uptime is under the threshold of $Uptime_value",2);
                 my $hub_restart = $alarm_manager->get('hub_restart');
-                my ($RC,$AlarmID) = $hub_restart->call({ 
+                my %AlarmObject = (
+                    robot => $localRobot,
+                    origin => $localRobot->{origin},
+                    domain => $Domain,
+                    source => "$hub->{ip}",
+                    dev_id => $localRobot->{robot_device_id},
+                    usertag1 => $localRobot->{os_user1},
+                    usertag2 => $localRobot->{os_user2},
+                    probe => "selfmonitoring",
+                    supp_key => "$suppkey_uptime",
+                    suppression => "$suppkey_uptime",
                     second => "$Uptime_value",
                     hubName => "$hub->{name}"
-                });
+                );
+                my ($RC,$AlarmID) = $hub_restart->customCall(\%AlarmObject);
 
                 if($RC == NIME_OK) {
                     $Console->print("Alarm generated : $AlarmID - [$hub_restart->{severity}] - $hub_restart->{subsystem}");
+                    my %Args = (
+                        suppkey => "$suppkey_uptime"
+                    );
+                    $filemap->set("$suppkey_uptime",\%Args);
+                    $filemap->writeToDisk();
                 }
                 else {
                     $Console->print("Failed to create alarm!",1);
+                }
+            }
+            else {
+                if($filemap->has("$suppkey_uptime")) {
+                    my $hub_restart = $alarm_manager->get('hub_restart');
+                    my %AlarmObject = (
+                        severity => 0,
+                        robot => $localRobot,
+                        origin => $localRobot->{origin},
+                        domain => $Domain,
+                        source => "$hub->{ip}",
+                        dev_id => $localRobot->{robot_device_id},
+                        usertag1 => $localRobot->{os_user1},
+                        usertag2 => $localRobot->{os_user2},
+                        probe => "selfmonitoring",
+                        supp_key => "$suppkey_uptime",
+                        suppression => "$suppkey_uptime",
+                        second => "0",
+                        hubName => "$hub->{name}"
+                    );
+                    my ($RC,$AlarmID) = $hub_restart->customCall(\%AlarmObject);
+
+                    if($RC == NIME_OK) {
+                        $Console->print("Clear generated : $AlarmID - [0] - $hub_restart->{subsystem}");
+                        $filemap->delete("$suppkey_uptime");
+                        $filemap->writeToDisk();
+                    }
+                    else {
+                        $Console->print("Failed to generate alarm clear!",1);
+                    }
                 }
             }
             $Console->print('---------------------------------------',5);
@@ -190,7 +239,7 @@ sub main {
         #
         # getLocalRobots() , retrieve all robots from remote hub.
         #
-        if($GO_Intermediate or $GO_Spooler) { # Memory optimization
+        { # Memory optimization
 
             my $trycount = $retry_count; # Get configuration max_retry for probeList method.
             my $success = 0;
@@ -198,7 +247,7 @@ sub main {
             WH: while($trycount--) {
                 my $echotry = 3 - $trycount; # Reverse number
                 $Console->print("Execute getLocalRobots() , try n'$echotry");
-                if( checkRobots($hub) ) {
+                if( checkRobots($hub,$localRobot) ) {
                     $success = 1;
                     last WH; # Kill retry while.
                 }
@@ -220,7 +269,8 @@ sub main {
         return 1;
     }
     else {
-        $Console->print('Failed to get hub',0);
+        $Console->print('Failed to get local hub or local robot!',0);
+        $Console->print("RC: $RC, RC_LC: $RC_LC",0);
         return 0;
     }
 }
@@ -231,7 +281,7 @@ sub main {
 # used in main() method.
 # 
 sub checkRobots {
-    my ($hub) = @_;
+    my ($hub,$localRobot) = @_;
 
     my ($RC,@RobotsList) = $hub->local_robotsArray();
     if($RC == NIME_OK) {
@@ -247,66 +297,75 @@ sub checkRobots {
         $Console->print("Starting robots with Intermediate => $GO_Intermediate and Spooler => $GO_Spooler",5);
         $Console->print('---------------------------------------',5);
 
+        # Maximum robots ! 
+        my $suppkey_maxrobots = "selfmon_maxrobots_$robot->{name}";
+        if(scalar @RobotsList > $Maxrobots_per_hub) {
+            my $maxrobots = $alarm_manager->get('maxrobots');
+            my %AlarmObject = (
+                hubName => "$hub->{name}",
+                robot => $localRobot,
+                origin => $localRobot->{origin},
+                domain => $Domain,
+                source => "$hub->{ip}",
+                dev_id => $localRobot->{robot_device_id},
+                usertag1 => $localRobot->{os_user1},
+                usertag2 => $localRobot->{os_user2},
+                probe => "selfmonitoring",
+                supp_key => "$suppkey_maxrobots",
+                suppression => "$suppkey_maxrobots"
+            );
+            my ($rc_alarm,$alarmid) = $maxrobots->customCall(\%AlarmObject);
+
+            if($rc_alarm == NIME_OK) {
+                $Console->print("Alarm generated : $alarmid - [$maxrobots->{severity}] - $maxrobots->{subsystem}");
+                my %Args = (
+                    suppkey => "$suppkey_maxrobots"
+                );
+                $filemap->set("$suppkey_maxrobots",\%Args);
+                $filemap->writeToDisk();
+            }
+            else {
+                $Console->print("Failed to create alarm!",1);
+            }
+        }
+        else {
+            if($filemap->has("$suppkey_maxrobots")) {
+                my $maxrobots = $alarm_manager->get('maxrobots');
+                my %AlarmObject = (
+                    severity => 0,
+                    hubName => "$hub->{name}",
+                    robot => $localRobot,
+                    origin => $localRobot->{origin},
+                    domain => $Domain,
+                    source => "$hub->{ip}",
+                    dev_id => $localRobot->{robot_device_id},
+                    usertag1 => $localRobot->{os_user1},
+                    usertag2 => $localRobot->{os_user2},
+                    probe => "selfmonitoring",
+                    supp_key => "$suppkey_maxrobots",
+                    suppression => "$suppkey_maxrobots"
+                );
+                my ($rc_alarm,$alarmid) = $maxrobots->customCall(\%AlarmObject);
+
+                if($rc_alarm == NIME_OK) {
+                    $Console->print("Alarm generated : $alarmid - [0] - $maxrobots->{subsystem}");
+                    $filemap->delete("$suppkey_maxrobots");
+                    $filemap->writeToDisk();
+                }
+                else {
+                    $Console->print("Failed to create alarm!",1);
+                }
+            }
+        }
+        undef $suppkey_maxrobots;
+
         # Foreach robots
         foreach my $robot (@RobotsList) {
             next if "$robot->{status}" eq "2";
 
-            my $int_identifier = "selfmon_intermediateRobot_$robot->{name}_controller";
-
             if("$robot->{status}" eq "1") {
                 push(@Arr_intermediateRobots,"$robot->{name}");
                 $Stats{intermediate}++;
-
-                if($GO_Intermediate && not $Audit) {
-                    # Create new alarm!
-
-                    my $intermediate_robot = $alarm_manager->get('intermediate_robot');
-                    my %AlarmObject = (
-                        hubname => "$hub->{name}",
-                        robot => $robot,
-                        origin => $robot->{origin},
-                        domain => "$Domain",
-                        probe => "selfmonitoring",
-                        supp_key => "$int_identifier",
-                        suppression => "$int_identifier"
-                    );
-                    my ($rc_alarm,$alarmid) = $intermediate_robot->customCall(\%AlarmObject);
-
-                    if($rc_alarm == NIME_OK) {
-                        $Console->print("Alarm generated : $alarmid - [$intermediate_robot->{severity}] - $intermediate_robot->{subsystem}");
-                        my %Args = (
-                            suppkey => "$int_identifier"
-                        );
-                        $filemap->set("$int_identifier",\%Args);
-                    }
-                    else {
-                        $Console->print("Failed to create alarm!",1);
-                    }
-                }
-            }
-            elsif( $filemap->has("$int_identifier") ) {
-
-                my $intermediate_robot = $alarm_manager->get('intermediate_robot');
-                my %AlarmObject = (
-                    severity => 0,
-                    hubname => "$hub->{name}",
-                    robot => $robot,
-                    origin => $robot->{origin},
-                    domain => "$Domain",
-                    probe => "selfmonitoring",
-                    supp_key => "$int_identifier",
-                    suppression => "$int_identifier"
-                );
-                my ($rc_alarm,$alarmid) = $intermediate_robot->customCall(\%AlarmObject);
-
-                if($rc_alarm == NIME_OK) {
-                    $Console->print("Clear generated : $alarmid - [0] - $intermediate_robot->{subsystem}");
-                    $filemap->delete("$int_identifier");
-                }
-                else {
-                    $Console->print("Failed to generate Clear!",1);
-                }
-                    
             }
 
             if($GO_Spooler) {
@@ -323,8 +382,12 @@ sub checkRobots {
                         my %AlarmObject = (
                             hubname => "$hub->{name}",
                             robot => $robot,
-                            domain => "$Domain",
+                            domain => $Domain,
                             origin => $robot->{origin},
+                            source => "$hub->{ip}",
+                            dev_id => $robot->{robot_device_id},
+                            usertag1 => $robot->{os_user1},
+                            usertag2 => $robot->{os_user2},
                             probe => "selfmonitoring",
                             supp_key => "$suppkey_spooler",
                             suppression => "$suppkey_spooler"
@@ -337,6 +400,7 @@ sub checkRobots {
                                 suppkey => "$suppkey_spooler"
                             );
                             $filemap->set("$suppkey_spooler",\%Args);
+                            $filemap->writeToDisk();
                         }
                         else {
                             $Console->print("Failed to create alarm!",1);
@@ -350,8 +414,12 @@ sub checkRobots {
                         severity => 0,
                         hubname => "$hub->{name}",
                         robot => $robot,
-                        domain => "$Domain",
+                        domain => $Domain,
                         origin => $robot->{origin},
+                        source => "$hub->{ip}",
+                        dev_id => $robot->{robot_device_id},
+                        usertag1 => $robot->{os_user1},
+                        usertag2 => $robot->{os_user2},
                         probe => "selfmonitoring",
                         supp_key => "$suppkey_spooler",
                         suppression => "$suppkey_spooler"
@@ -361,6 +429,7 @@ sub checkRobots {
                     if($rc_alarm == NIME_OK) {
                         $Console->print("Clear generated : $alarmid - [0] - $spooler_fail->{subsystem}");
                         $filemap->delete("$suppkey_spooler");
+                        $filemap->writeToDisk();
                     }
                     else {
                         $Console->print("Failed to generate Clear!",1);
@@ -375,6 +444,68 @@ sub checkRobots {
         $Console->print('Final statistiques :',5);
         foreach(keys %Stats) {
             $Console->print("$_ => $Stats{$_}");
+        }
+
+        my $int_identifier = "selfmon_intermediateRobot";
+        if($Stats{intermediate} > 0 && $GO_Intermediate && not $Audit) {
+            my $intermediate_robot = $alarm_manager->get('intermediate_robot');
+            my %AlarmObject = (
+                count => $Stats{intermediate},
+                hubName => "$hub->{name}",
+                robot => $localRobot,
+                origin => $localRobot->{origin},
+                domain => $Domain,
+                source => "$hub->{ip}",
+                dev_id => $localRobot->{robot_device_id},
+                usertag1 => $localRobot->{os_user1},
+                usertag2 => $localRobot->{os_user2},
+                probe => "selfmonitoring",
+                supp_key => "$int_identifier",
+                suppression => "$int_identifier"
+            );
+            my ($rc_alarm,$alarmid) = $intermediate_robot->customCall(\%AlarmObject);
+
+            if($rc_alarm == NIME_OK) {
+                $Console->print("Alarm generated : $alarmid - [$intermediate_robot->{severity}] - $intermediate_robot->{subsystem}");
+                my %Args = (
+                    suppkey => "$int_identifier"
+                );
+                $filemap->set("$int_identifier",\%Args);
+                $filemap->writeToDisk();
+            }
+            else {
+                $Console->print("Failed to create alarm!",1);
+            }
+        }
+        else {
+            if($filemap->has("$int_identifier")) {
+                my $intermediate_robot = $alarm_manager->get('intermediate_robot');
+                my %AlarmObject = (
+                    severity => 0,
+                    count => $Stats{intermediate},
+                    hubName => "$hub->{name}",
+                    robot => $localRobot,
+                    origin => $localRobot->{origin},
+                    source => "$hub->{ip}",
+                    dev_id => $localRobot->{robot_device_id},
+                    usertag1 => $localRobot->{os_user1},
+                    usertag2 => $localRobot->{os_user2},
+                    domain => $Domain,
+                    probe => "selfmonitoring",
+                    supp_key => "$int_identifier",
+                    suppression => "$int_identifier"
+                );
+                my ($rc_alarm,$alarmid) = $intermediate_robot->customCall(\%AlarmObject);
+
+                if($rc_alarm == NIME_OK) {
+                    $Console->print("Clear generated : $alarmid - [0] - $intermediate_robot->{subsystem}");
+                    $filemap->delete("$int_identifier");
+                    $filemap->writeToDisk();
+                }
+                else {
+                    $Console->print("Failed to generate Clear!",1);
+                }
+            }
         }
 
         # Write file to the disk.
@@ -502,7 +633,8 @@ sub checkProbes {
 
                             if($RC_ALARM == NIME_OK) {
                                 $Console->print("Generate clear : $AlarmID - [0] - $probe_offline->{subsystem}");
-                                $filemap->delete($suppkey_poffline)
+                                $filemap->delete($suppkey_poffline);
+                                $filemap->writeToDisk();
                             }
                             else {
                                 $Console->print("Failed to generate clear! (RC: $RC_ALARM)",1);
@@ -544,6 +676,7 @@ sub checkProbes {
                                 $filemap->set($suppkey_poffline,{
                                     suppkey => $suppkey_poffline
                                 });
+                                $filemap->writeToDisk();
                             }
                             else {
                                 $Console->print("Failed to create alarm! (RC: $RC_ALARM)",1);
@@ -622,6 +755,7 @@ sub doCallback {
         if($RC == NIME_OK) {
             $Console->print("Alarm generated : $AlarmID - [$callback_fail->{severity}] - $callback_fail->{subsystem}");
             $filemap->set($suppkey_fail);
+            $filemap->writeToDisk();
         }
         else {
             $Console->print("Failed to create alarm! (RC: $RC)",1);
@@ -652,6 +786,7 @@ sub doCallback {
             if($RC == NIME_OK) {
                 $Console->print("Alarm clear : $AlarmID - [$callback_fail->{severity}] - $callback_fail->{subsystem}");
                 $filemap->delete($suppkey_fail);
+                $filemap->writeToDisk();
             }
             else {
                 $Console->print("Failed to generate alarm clear! (RC: $RC)",1);
