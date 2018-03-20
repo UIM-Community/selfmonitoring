@@ -1,0 +1,170 @@
+<setup>
+    domain = NMS-PROD
+    audit = 1
+    callback_retry_count = 3
+    nim_login = administrator
+    nim_password = nim76prox
+    output_directory = output
+    output_cache_time = 432000
+</setup>
+<configuration> overwrite
+    <alarms> overwrite
+        intermediate = 1
+        spooler = 0
+    </alarms>
+    check_nisbridge = no
+    priority_on_ha = yes
+    check_hubuptime = yes
+    uptime_seconds = 600
+    maxrobots_per_hub = 1250
+</configuration>
+<probes_monitoring>
+    <discovery_server>
+        callback = get_device_statistics
+        alarm_on_probe_deactivated = 0
+        ha_superiority = yes
+    </discovery_server>
+    <hub>
+        callback = get_info
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </hub>
+    <spooler>
+        callback = get_info
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </spooler>
+    <nas>
+        callback = get_info
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </nas>
+    <automated_deployment_engine>
+        callback = get_info
+        alarm_on_probe_deactivated = 0
+        ha_superiority = yes
+    </automated_deployment_engine>
+    <mpse>
+        callback = get_info 
+        alarm_on_probe_deactivated = 0
+        ha_superiority = yes
+    </mpse>
+    <alarm_enrichment>
+        callback = getStatistics
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </alarm_enrichment>
+    <HA>
+        callback = get_status
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </HA>
+    <udm>
+        callback = _status 
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </udm>
+    <udm_manager>
+        callback = getRunningStatistics
+        alarm_on_probe_deactivated = 0
+        ha_superiority = yes
+    </udm_manager>
+    <data_engine>
+        callback = get_stats 
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </data_engine>
+    <netcoolgtw>
+        callback = _status
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </netcoolgtw>
+    <prop_processor>
+        callback = _status
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </prop_processor>
+    <distsrv>
+        callback = get_info
+        alarm_on_probe_deactivated = 1
+        ha_superiority = yes
+    </distsrv>
+</probes_monitoring>
+<alarm_messages> overwrite
+    <maxrobots> overwrite
+        message = Selfmonitoring: Maximum threshold of $Threshold Robots reached on $hubName
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </maxrobots>
+    <callback_fail> overwrite
+        message = Selfmonitoring: Callback $callback failed for $probeName on hub $hubname
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </callback_fail>
+    <probe_offline> overwrite
+        message = Selfmonitoring: Probe $probeName is disabled on hub $hubname
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </probe_offline>
+    <spooler_fail> overwrite
+        message = Selfmonitoring: Spooler from $robotname return RC $rc when get_info callback is executed
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </spooler_fail>
+    <intermediate_robot> overwrite
+        message = Selfmonitoring: $count robots are in intermediate state on hub $hubName
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </intermediate_robot>
+    <nisbridge> overwrite
+        message = Selfmonitoring: NIS_Bridge is incorrectly activated/disabled on $hubname/$robotname
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </nisbridge>
+    <ump_failcallback> overwrite
+        message = Selfmonitoring: Callback get_info failed on wasp of $umpName
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </ump_failcallback>
+    <ump_probelist_fail> overwrite
+        message = Selfmonitoring: Failed to execute callback controller/probe_list for ump $umpName 
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </ump_probelist_fail>
+    <hub_restart> overwrite
+        message = Selfmonitoring: Hub $hubName restarted in the recent $second seconds!
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </hub_restart>
+    <distsrv_deployment> overwrite
+        message = Selfmonitoring: Distsrv of $hubname with jobid => $jobid take a long time to be deployed.
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+    </distsrv_deployment>
+    <distsrv_maxjobs> overwrite
+        message = Selfmonitoring: Distsrv of $hubname reach the threshold of $max cached jobs ( Total of $count )
+        i18n_token = 
+        severity = 2
+        subsystem = 1.1.20
+        supp_key = 
+    </distsrv_maxjobs>
+</alarm_messages>
